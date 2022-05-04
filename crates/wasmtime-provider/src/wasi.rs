@@ -2,15 +2,16 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::path::{Component, Path};
 
-use wasi_cap_std_sync::{ambient_authority, Dir};
+// use wasi_cap_std_sync::{ambient_authority, Dir};
 use wasi_common::WasiCtx;
+use wasmtime_wasi::{ambient_authority, Dir};
 
 pub(crate) fn init_ctx(
   preopen_dirs: &[(String, Dir)],
   argv: &[String],
   env: &[(String, String)],
 ) -> Result<WasiCtx, Box<dyn Error + Send + Sync>> {
-  let mut ctx_builder = wasi_cap_std_sync::WasiCtxBuilder::new();
+  let mut ctx_builder = wasmtime_wasi::WasiCtxBuilder::new();
 
   ctx_builder = ctx_builder.inherit_stdio().args(argv)?.envs(env)?;
 
@@ -57,4 +58,14 @@ pub(crate) fn compute_argv(module: &Path, module_args: &[String]) -> Vec<String>
   }
 
   result
+}
+
+#[cfg(feature = "wasi")]
+pub(crate) fn init_wasi(params: &wapc::WasiParams) -> super::Result<WasiCtx> {
+  init_ctx(
+    &compute_preopen_dirs(&params.preopened_dirs, &params.map_dirs).unwrap(),
+    &params.argv,
+    &params.env_vars,
+  )
+  .map_err(|e| crate::errors::Error::InitializationFailed(e))
 }

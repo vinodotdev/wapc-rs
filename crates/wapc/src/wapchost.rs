@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use self::modulestate::ModuleState;
+use self::modulestate::{CallStatus, ModuleState};
 use self::traits::WebAssemblyEngineProvider;
 use crate::{errors, HostCallback, Invocation};
 
@@ -20,21 +20,16 @@ type Result<T> = std::result::Result<T, crate::errors::Error>;
 /// `WapcHost` makes no assumptions about the contents or format of either the payload or the
 /// operation name, other than that the operation name is a UTF-8 encoded string.
 #[must_use]
+#[allow(missing_debug_implementations)]
 pub struct WapcHost {
   engine: RefCell<Box<dyn WebAssemblyEngineProvider>>,
   state: Arc<ModuleState>,
 }
 
-impl std::fmt::Debug for WapcHost {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("WapcHost").field("state", &self.state).finish()
-  }
-}
-
 impl WapcHost {
   /// Creates a new instance of a waPC-compliant host runtime paired with a given
   /// low-level engine provider
-  pub fn new(engine: Box<dyn WebAssemblyEngineProvider>, host_callback: Option<Box<HostCallback>>) -> Result<Self> {
+  pub fn new(engine: Box<dyn WebAssemblyEngineProvider>, host_callback: Option<Arc<HostCallback>>) -> Result<Self> {
     let id = GLOBAL_MODULE_COUNT.fetch_add(1, Ordering::SeqCst);
 
     let state = Arc::new(ModuleState::new(host_callback, id));
@@ -74,26 +69,25 @@ impl WapcHost {
     let inv = Invocation::new(op, payload.to_vec());
     let op_len = inv.operation.len();
     let msg_len = inv.msg.len();
+    let (index, _rx) = self.state.new_invocation(inv);
+    let mut context = self
+      .engine
+      .borrow()
+      .new_context()
+      .map_err(|e| errors::Error::NewContext(e.to_string()))?;
 
-    {
-      *self.state.guest_response.write() = None;
-      *self.state.guest_request.write() = Some(inv);
-      *self.state.guest_error.write() = None;
-      *self.state.host_response.write() = None;
-      *self.state.host_error.write() = None;
-    }
-
-    let callresult = match self.engine.borrow_mut().call(op_len as i32, msg_len as i32) {
+    let callresult = match context.call(index, op_len as i32, msg_len as i32) {
       Ok(c) => c,
       Err(e) => {
         return Err(errors::Error::GuestCallFailure(e.to_string()));
       }
     };
 
+    let state = self.state.take_state(index).unwrap();
+
     if callresult == 0 {
       // invocation failed
-      let lock = self.state.guest_error.read();
-      match *lock {
+      match state.guest_error {
         Some(ref s) => Err(errors::Error::GuestCallFailure(s.clone())),
         None => Err(errors::Error::GuestCallFailure(
           "No error message set for call failure".to_owned(),
@@ -101,19 +95,70 @@ impl WapcHost {
       }
     } else {
       // invocation succeeded
-      match *self.state.guest_response.read() {
+      match state.guest_response {
         Some(ref e) => Ok(e.clone()),
-        None => {
-          let lock = self.state.guest_error.read();
-          match *lock {
+        None => match state.guest_error {
+          Some(ref s) => Err(errors::Error::GuestCallFailure(s.clone())),
+          None => Err(errors::Error::GuestCallFailure(
+            "No error message OR response set for call success".to_owned(),
+          )),
+        },
+      }
+    }
+  }
+
+  /// Invokes the `__guest_call` function within the guest module as per the waPC specification.
+  /// Provide an operation name and an opaque payload of bytes and the function returns a `Result`
+  /// containing either an error or an opaque reply of bytes.
+  ///
+  /// It is worth noting that the _first_ time `call` is invoked, the WebAssembly module
+  /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
+  /// might be due to lazy initialization or JIT-compilation.
+  pub fn call_async(&self, op: &str, payload: Vec<u8>) -> futures_core::future::BoxFuture<Result<Vec<u8>>> {
+    let inv = Invocation::new(op, payload);
+    let msg_len = inv.msg.len();
+    let op_len = inv.operation.len();
+    let (index, rx) = self.state.new_invocation(inv);
+
+    let context = self.engine.borrow().new_context();
+
+    Box::pin(async move {
+      let mut context = context.map_err(|e| errors::Error::NewContext(e.to_string()))?;
+      let callresult = match context.call_async(index, op_len as i32, msg_len as i32).await {
+        Ok(c) => c,
+        Err(e) => {
+          return Err(errors::Error::GuestCallFailure(e.to_string()));
+        }
+      };
+
+      if callresult > 0 {
+        return Err(errors::Error::GuestCallFailure(
+          "Call did not produce an error but returned an error status code.".to_owned(),
+        ));
+      }
+
+      let status = rx
+        .await
+        .map_err(|_e| errors::Error::GuestCallFailure("Async wait failed".to_owned()))?;
+
+      match status {
+        CallStatus::Complete(state) => match state.guest_error {
+          Some(ref s) => Err(errors::Error::GuestCallFailure(s.clone())),
+          None => Err(errors::Error::GuestCallFailure(
+            "No error message set for call failure".to_owned(),
+          )),
+        },
+        CallStatus::Error(state) => match state.guest_response {
+          Some(ref e) => Ok(e.clone()),
+          None => match state.guest_error {
             Some(ref s) => Err(errors::Error::GuestCallFailure(s.clone())),
             None => Err(errors::Error::GuestCallFailure(
               "No error message OR response set for call success".to_owned(),
             )),
-          }
-        }
+          },
+        },
       }
-    }
+    })
   }
 
   /// Performs a live "hot swap" of the WebAssembly module. Since all internal waPC execution is assumed to be

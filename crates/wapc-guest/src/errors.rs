@@ -34,6 +34,8 @@ pub fn new(kind: ErrorKind) -> Error {
 pub enum ErrorKind {
   /// Error returned when a host call fails.
   HostError(Vec<u8>),
+  /// Error completing an asynchronous request.
+  Async(u32, String),
 }
 
 impl StdError for Error {}
@@ -42,6 +44,7 @@ impl fmt::Display for Error {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     match self.0 {
       ErrorKind::HostError(ref e) => write!(f, "Host error: {}", String::from_utf8_lossy(e)),
+      ErrorKind::Async(index, ref e) => write!(f, "Async error: call {} failed: {}", index, e),
     }
   }
 }

@@ -18,6 +18,9 @@ pub enum Error {
   /// Initialization Failed.
   #[error("Initialization failed: {0}")]
   InitFailed(String),
+  /// Could not create unique execution context for function call.
+  #[error("Could not create new execution context: {0}")]
+  NewContext(String),
   /// Error during a guest call.
   #[error("Guest call failure: {0}")]
   GuestCallFailure(String),

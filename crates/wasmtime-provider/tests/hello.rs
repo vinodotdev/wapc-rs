@@ -1,4 +1,5 @@
 use std::fs::read;
+use std::sync::Arc;
 
 use wapc::errors::Error;
 use wapc::WapcHost;
@@ -14,7 +15,10 @@ fn create_guest(path: &str) -> Result<WapcHost, Error> {
       wasmtime_provider::WasmtimeEngineProvider::new(&buf, None).unwrap();
     }
   }
-  WapcHost::new(Box::new(engine), Some(Box::new(move |_a, _b, _c, _d, _e| Ok(vec![]))))
+  WapcHost::new(
+    Box::new(engine),
+    Some(Arc::new(move |_a, _b, _c, _d, _e| Box::pin(async move { Ok(vec![]) }))),
+  )
 }
 
 #[test]

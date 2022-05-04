@@ -81,14 +81,11 @@
 pub mod errors;
 mod protocol;
 
-pub use protocol::{CallResult, HandlerResult, __guest_call, console_log, host_call, register_function};
+pub use protocol::*;
+
 #[cfg(feature = "codec")]
 pub use wapc_codec as codec;
+pub use wasm_rs_async_executor::single_threaded as executor;
 
 /// Glob imports for common guest module development
-pub mod prelude {
-  #[cfg(feature = "codec")]
-  pub use wapc_codec::messagepack;
-
-  pub use crate::protocol::{console_log, host_call, register_function, CallResult, HandlerResult};
-}
+pub mod prelude;

@@ -1,5 +1,7 @@
+use std::sync::Arc;
 use std::time::Instant;
 
+use futures_core::future::BoxFuture;
 use wapc::WapcHost;
 use wasmtime_provider::WasmtimeEngineProvider;
 
@@ -19,7 +21,7 @@ pub fn main() -> Result<(), wapc::errors::Error> {
   let module_bytes = std::fs::read(file).expect("WASM could not be read");
   let engine = WasmtimeEngineProvider::new(&module_bytes, None)?;
 
-  let host = WapcHost::new(Box::new(engine), Some(Box::new(host_callback)))?;
+  let host = WapcHost::new(Box::new(engine), Some(Arc::new(host_callback)))?;
 
   println!("Calling guest (wasm) function '{}'", func);
   let res = host.call(func, payload.to_owned().as_bytes())?;
@@ -29,19 +31,19 @@ pub fn main() -> Result<(), wapc::errors::Error> {
 }
 
 fn host_callback(
-  id: u64,
-  bd: &str,
-  ns: &str,
-  op: &str,
-  payload: &[u8],
-) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+  id: i32,
+  bd: String,
+  ns: String,
+  op: String,
+  payload: Vec<u8>,
+) -> BoxFuture<'static, Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>> {
   println!(
     "Guest {} invoked '{}->{}:{}' on the host with a payload of '{}'",
     id,
     bd,
     ns,
     op,
-    ::std::str::from_utf8(payload).unwrap()
+    String::from_utf8(payload).unwrap()
   );
-  Ok(vec![])
+  Box::pin(async move { Ok(vec![]) })
 }
