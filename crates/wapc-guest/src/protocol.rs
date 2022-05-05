@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
@@ -18,13 +18,13 @@ pub type HandlerResult<T> = Result<T, Box<dyn std::error::Error + Sync + Send>>;
 /// Generic BoxedFuture type
 pub type BoxedFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
-static CALL_NUM: AtomicU32 = AtomicU32::new(0);
+static CALL_NUM: AtomicI32 = AtomicI32::new(0);
 
 /// The [__guest_call] function is required by waPC guests and should only be called by waPC hosts.
 #[allow(unsafe_code, unreachable_pub)]
 #[no_mangle]
-pub extern "C" fn __guest_call(index: u32, op_len: u32, req_len: u32) -> u32 {
-  println!("guest call");
+pub extern "C" fn __guest_call(index: i32, op_len: i32, req_len: i32) -> i32 {
+  println!(">> guest: __guest_call");
   let mut buf: Vec<u8> = Vec::with_capacity(req_len as _);
   let mut opbuf: Vec<u8> = Vec::with_capacity(op_len as _);
 
@@ -65,16 +65,18 @@ pub extern "C" fn __guest_call(index: u32, op_len: u32, req_len: u32) -> u32 {
 /// The [__host_call_response_ready] function is required by waPC guests and should only be called by waPC hosts.
 #[allow(unsafe_code, unreachable_pub, clippy::future_not_send)]
 #[no_mangle]
-pub extern "C" fn __host_call_response_ready(id: u32, code: u32) {
+pub extern "C" fn __host_call_response_ready(id: i32, code: i32) {
+  println!(">> guest: __host_call_response_ready");
   let tx = ASYNC_HOST_CALLS.lock().remove(&id).unwrap();
   let _ = tx.send(code);
+  exhaust_tasks();
 }
 
 /// The [__async_guest_call] function is required by waPC guests and should only be called by waPC hosts.
 #[allow(unsafe_code, unreachable_pub, clippy::future_not_send)]
 #[no_mangle]
-pub extern "C" fn __async_guest_call(id: u32, op_len: u32, req_len: u32) {
-  println!("async guest call");
+pub extern "C" fn __async_guest_call(id: i32, op_len: i32, req_len: i32) {
+  println!(">> guest: __async_guest_call");
   let mut buf: Vec<u8> = Vec::with_capacity(req_len as _);
   let mut opbuf: Vec<u8> = Vec::with_capacity(op_len as _);
 
@@ -86,9 +88,9 @@ pub extern "C" fn __async_guest_call(id: u32, op_len: u32, req_len: u32) {
   };
   let dispatcher = DISPATCHER.get().unwrap();
 
-  println!("spawning task");
+  println!(">> guest: spawning task");
   crate::executor::spawn(async move {
-    println!("in async task");
+    println!(">> guest: in async task");
     let result = dispatcher
       .dispatch(Invocation {
         id,
@@ -125,7 +127,7 @@ pub extern "C" fn __async_guest_call(id: u32, op_len: u32, req_len: u32) {
 /// Invocation
 pub struct Invocation {
   /// id of the call.
-  pub id: u32,
+  pub id: i32,
   /// Operation name.
   pub operation: String,
   /// Payload
@@ -136,7 +138,7 @@ static DISPATCHER: OnceCell<Box<dyn Dispatcher + Sync + Send>> = OnceCell::new()
 
 /// Start the event loop
 pub fn register_dispatcher(dispatcher: Box<dyn Dispatcher + Send + Sync>) {
-  println!("registering dispatcher");
+  println!(">> guest: registering dispatcher");
   let _ = DISPATCHER.set(dispatcher);
 }
 
@@ -161,7 +163,7 @@ extern "C" {
 
   /// The host's exported __host_call function.
   pub(crate) fn __host_call(
-    call: u32,
+    call: i32,
     bd_ptr: *const u8,
     bd_len: usize,
     ns_ptr: *const u8,
@@ -174,7 +176,7 @@ extern "C" {
 
   /// The host's exported __host_call function.
   pub(crate) fn __async_host_call(
-    call: u32,
+    call: i32,
     bd_ptr: *const u8,
     bd_len: usize,
     ns_ptr: *const u8,
@@ -186,20 +188,20 @@ extern "C" {
   ) -> usize;
 
   /// The host's exported __host_response function.
-  pub(crate) fn __host_response(call: u32, ptr: *mut u8);
-  pub(crate) fn __host_response_len(call: u32) -> usize;
+  pub(crate) fn __host_response(call: i32, ptr: *mut u8);
+  pub(crate) fn __host_response_len(call: i32) -> usize;
 
-  pub(crate) fn __host_error(call: u32, ptr: *mut u8);
-  pub(crate) fn __host_error_len(call: u32) -> usize;
+  pub(crate) fn __host_error(call: i32, ptr: *mut u8);
+  pub(crate) fn __host_error_len(call: i32) -> usize;
 
   /// The host's exported __guest_response function.
-  pub(crate) fn __guest_response(call: u32, ptr: *const u8, len: usize);
+  pub(crate) fn __guest_response(call: i32, ptr: *const u8, len: usize);
   /// The host's exported __guest_error function.
-  pub(crate) fn __guest_error(call: u32, ptr: *const u8, len: usize);
+  pub(crate) fn __guest_error(call: i32, ptr: *const u8, len: usize);
   /// The host's exported __guest_request function.
-  pub(crate) fn __guest_request(call: u32, op_ptr: *mut u8, ptr: *mut u8);
+  pub(crate) fn __guest_request(call: i32, op_ptr: *mut u8, ptr: *mut u8);
 
-  pub(crate) fn __guest_call_response_ready(call: u32, code: u32);
+  pub(crate) fn __guest_call_response_ready(call: i32, code: i32);
 }
 
 type HandlerSignature = fn(&[u8]) -> CallResult;
@@ -208,7 +210,7 @@ type AsyncHandlerSignature = fn(Vec<u8>) -> BoxedFuture<CallResult>;
 static REGISTRY: Lazy<Mutex<HashMap<Vec<u8>, HandlerSignature>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static ASYNC_REGISTRY: Lazy<Mutex<HashMap<Vec<u8>, AsyncHandlerSignature>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-static ASYNC_HOST_CALLS: Lazy<Mutex<HashMap<u32, tokio::sync::oneshot::Sender<u32>>>> =
+static ASYNC_HOST_CALLS: Lazy<Mutex<HashMap<i32, tokio::sync::oneshot::Sender<i32>>>> =
   Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Register a handler for a waPC operation
@@ -298,12 +300,12 @@ pub fn async_host_call<'a>(
       msg.len(),
     )
   };
-  println!("wasm: async host call result: {}", callresult);
+  println!(">> guest: wasm: async host call result: {}", callresult);
 
   Box::pin(async move {
-    println!("inner wasm task awaiting channel recv");
+    println!(">> guest: inner wasm task awaiting channel recv");
     if callresult != 0 {
-      println!("call failed");
+      println!(">> guest: call failed");
       // call was not successful
       #[allow(unsafe_code)]
       let errlen = unsafe { __host_error_len(index) };
@@ -321,7 +323,7 @@ pub fn async_host_call<'a>(
       // call succeeded
       match recv.await {
         Ok(code) => {
-          println!("call succeeded with code: {}", code);
+          println!(">> guest: call succeeded with code: {}", code);
           #[allow(unsafe_code)]
           let len = unsafe { __host_response_len(index) };
 
@@ -336,7 +338,7 @@ pub fn async_host_call<'a>(
           Ok(buf)
         }
         Err(e) => {
-          println!("call failed : {}", e);
+          println!(">> guest: call failed : {}", e);
           Err(errors::new(errors::ErrorKind::Async(index, e.to_string())))
         }
       }

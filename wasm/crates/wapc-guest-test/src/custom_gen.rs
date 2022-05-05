@@ -76,8 +76,6 @@ fn echo_wrapper(input_payload: &[u8]) -> CallResult {
   let result = lock(input)?;
   Ok(messagepack::serialize(result)?)
 }
-use std::{future::Future, pin::Pin};
-type BoxedFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 #[cfg(feature = "guest")]
 fn echo_async_wrapper(input_payload: Vec<u8>) -> BoxedFuture<CallResult> {

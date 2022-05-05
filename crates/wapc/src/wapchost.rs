@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use self::modulestate::{CallStatus, ModuleState};
 use self::traits::WebAssemblyEngineProvider;
-use crate::{errors, HostCallback, Invocation};
+use crate::{errors, HostCallback, Invocation, ProviderCallContext};
 
 static GLOBAL_MODULE_COUNT: AtomicU64 = AtomicU64::new(1);
+static GLOBAL_CONTEXT_COUNT: AtomicU64 = AtomicU64::new(1);
 
 type Result<T> = std::result::Result<T, crate::errors::Error>;
 
@@ -23,29 +24,34 @@ type Result<T> = std::result::Result<T, crate::errors::Error>;
 #[allow(missing_debug_implementations)]
 pub struct WapcHost {
   engine: RefCell<Box<dyn WebAssemblyEngineProvider>>,
-  state: Arc<ModuleState>,
+  host_callback: Option<Arc<HostCallback>>,
+  id: u64,
 }
 
 impl WapcHost {
+  /// Manually increment the global module index. Useful mostly if you are manually
+  /// manipulating or creating WaPC hosts via their internals.
+  pub fn next_id() -> u64 {
+    GLOBAL_MODULE_COUNT.fetch_add(1, Ordering::SeqCst)
+  }
+
   /// Creates a new instance of a waPC-compliant host runtime paired with a given
   /// low-level engine provider
   pub fn new(engine: Box<dyn WebAssemblyEngineProvider>, host_callback: Option<Arc<HostCallback>>) -> Result<Self> {
-    let id = GLOBAL_MODULE_COUNT.fetch_add(1, Ordering::SeqCst);
-
-    let state = Arc::new(ModuleState::new(host_callback, id));
-
+    let id = Self::next_id();
     let mh = WapcHost {
       engine: RefCell::new(engine),
-      state: state.clone(),
+      host_callback,
+      id,
     };
 
-    mh.initialize(state)?;
+    mh.initialize()?;
 
     Ok(mh)
   }
 
-  fn initialize(&self, state: Arc<ModuleState>) -> Result<()> {
-    match self.engine.borrow_mut().init(state) {
+  fn initialize(&self) -> Result<()> {
+    match self.engine.borrow_mut().init() {
       Ok(_) => Ok(()),
       Err(e) => Err(errors::Error::InitFailed(e.to_string())),
     }
@@ -55,7 +61,7 @@ impl WapcHost {
   /// has instantiated multiple `WapcHost`s, then the single static host callback function
   /// will contain this value to allow disambiguation of modules
   pub fn id(&self) -> u64 {
-    self.state.id
+    self.id
   }
 
   /// Invokes the `__guest_call` function within the guest module as per the waPC specification.
@@ -66,17 +72,103 @@ impl WapcHost {
   /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
   /// might be due to lazy initialization or JIT-compilation.
   pub fn call(&self, op: &str, payload: &[u8]) -> Result<Vec<u8>> {
+    let state = Arc::new(ModuleState::new(self.host_callback.clone(), self.id));
+    let context = self
+      .engine
+      .borrow()
+      .new_context(state.clone())
+      .map_err(|e| crate::errors::Error::Context(e.to_string()))?;
+    let mut context = WapcCallContext::new(context, state)?;
+    context
+      .call(op, payload)
+      .map_err(|e| crate::errors::Error::GuestCallFailure(e.to_string()))
+  }
+
+  /// Invokes the `__guest_call` function within the guest module as per the waPC specification.
+  /// Provide an operation name and an opaque payload of bytes and the function returns a `Result`
+  /// containing either an error or an opaque reply of bytes.
+  ///
+  /// It is worth noting that the _first_ time `call` is invoked, the WebAssembly module
+  /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
+  /// might be due to lazy initialization or JIT-compilation.
+  pub fn call_async<T: AsRef<str>>(&self, op: T, payload: Vec<u8>) -> futures_core::future::BoxFuture<Result<Vec<u8>>> {
+    let state = Arc::new(ModuleState::new(self.host_callback.clone(), self.id));
+    let context = self.engine.borrow().new_context(state.clone());
+    let op = op.as_ref().to_owned();
+
+    Box::pin(async move {
+      let mut context = WapcCallContext::new(
+        context.map_err(|e| crate::errors::Error::Context(e.to_string()))?,
+        state,
+      )?;
+      context
+        .call_async(&op, payload)
+        .await
+        .map_err(|e| crate::errors::Error::GuestCallFailure(e.to_string()))
+    })
+  }
+
+  /// Performs a live "hot swap" of the WebAssembly module. Since all internal waPC execution is assumed to be
+  /// single-threaded and non-reentrant, this call is synchronous and so
+  /// you should never attempt to invoke `call` from another thread while performing this hot swap.
+  ///
+  /// **Note**: if the underlying engine you've chosen is a JITting engine, then performing a swap
+  /// will re-introduce a "cold start" delay upon the next function call.
+  ///
+  /// If you perform a hot swap of a WASI module, you cannot alter the parameters used to create the WASI module
+  /// like the environment variables, mapped directories, pre-opened files, etc. Not abiding by this could lead
+  /// to privilege escalation attacks or non-deterministic behavior after the swap.
+  pub fn replace_module(&self, module: &[u8]) -> Result<()> {
+    match self.engine.borrow_mut().replace(module) {
+      Ok(_) => Ok(()),
+      Err(e) => Err(errors::Error::ReplacementFailed(e.to_string())),
+    }
+  }
+}
+
+/// An isolated call context that is meant to be cheap to create and throw away.
+pub struct WapcCallContext {
+  context: Box<dyn ProviderCallContext + Send + Sync>,
+  state: Arc<ModuleState>,
+  id: u64,
+}
+
+impl std::fmt::Debug for WapcCallContext {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("WapcCallContext").field("state", &self.state).finish()
+  }
+}
+
+impl WapcCallContext {
+  fn new(mut context: Box<dyn ProviderCallContext + Send + Sync>, state: Arc<ModuleState>) -> Result<Self> {
+    let id = GLOBAL_CONTEXT_COUNT.fetch_add(1, Ordering::SeqCst);
+    context
+      .init()
+      .map_err(|e| crate::errors::Error::InitFailed(e.to_string()))?;
+
+    Ok(Self { context, state, id })
+  }
+
+  /// Return the unique id associated with this context.
+  #[must_use]
+  pub fn id(&self) -> u64 {
+    self.id
+  }
+
+  /// Invokes the `__guest_call` function within the guest module as per the waPC specification.
+  /// Provide an operation name and an opaque payload of bytes and the function returns a `Result`
+  /// containing either an error or an opaque reply of bytes.
+  ///
+  /// It is worth noting that the _first_ time `call` is invoked, the WebAssembly module
+  /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
+  /// might be due to lazy initialization or JIT-compilation.
+  pub fn call(&mut self, op: &str, payload: &[u8]) -> Result<Vec<u8>> {
     let inv = Invocation::new(op, payload.to_vec());
     let op_len = inv.operation.len();
     let msg_len = inv.msg.len();
     let (index, _rx) = self.state.new_invocation(inv);
-    let mut context = self
-      .engine
-      .borrow()
-      .new_context()
-      .map_err(|e| errors::Error::NewContext(e.to_string()))?;
 
-    let callresult = match context.call(index, op_len as i32, msg_len as i32) {
+    let callresult = match self.context.call(index, op_len as i32, msg_len as i32) {
       Ok(c) => c,
       Err(e) => {
         return Err(errors::Error::GuestCallFailure(e.to_string()));
@@ -114,17 +206,16 @@ impl WapcHost {
   /// It is worth noting that the _first_ time `call` is invoked, the WebAssembly module
   /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
   /// might be due to lazy initialization or JIT-compilation.
-  pub fn call_async(&self, op: &str, payload: Vec<u8>) -> futures_core::future::BoxFuture<Result<Vec<u8>>> {
+  pub fn call_async(&mut self, op: &str, payload: Vec<u8>) -> futures_core::future::BoxFuture<Result<Vec<u8>>> {
     let inv = Invocation::new(op, payload);
     let msg_len = inv.msg.len();
     let op_len = inv.operation.len();
     let (index, rx) = self.state.new_invocation(inv);
 
-    let context = self.engine.borrow().new_context();
+    let result = self.context.call_async(index, op_len as i32, msg_len as i32);
 
     Box::pin(async move {
-      let mut context = context.map_err(|e| errors::Error::NewContext(e.to_string()))?;
-      let callresult = match context.call_async(index, op_len as i32, msg_len as i32).await {
+      let callresult = match result {
         Ok(c) => c,
         Err(e) => {
           return Err(errors::Error::GuestCallFailure(e.to_string()));
@@ -159,22 +250,5 @@ impl WapcHost {
         },
       }
     })
-  }
-
-  /// Performs a live "hot swap" of the WebAssembly module. Since all internal waPC execution is assumed to be
-  /// single-threaded and non-reentrant, this call is synchronous and so
-  /// you should never attempt to invoke `call` from another thread while performing this hot swap.
-  ///
-  /// **Note**: if the underlying engine you've chosen is a JITting engine, then performing a swap
-  /// will re-introduce a "cold start" delay upon the next function call.
-  ///
-  /// If you perform a hot swap of a WASI module, you cannot alter the parameters used to create the WASI module
-  /// like the environment variables, mapped directories, pre-opened files, etc. Not abiding by this could lead
-  /// to privilege escalation attacks or non-deterministic behavior after the swap.
-  pub fn replace_module(&self, module: &[u8]) -> Result<()> {
-    match self.engine.borrow_mut().replace(module) {
-      Ok(_) => Ok(()),
-      Err(e) => Err(errors::Error::ReplacementFailed(e.to_string())),
-    }
   }
 }

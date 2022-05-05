@@ -22,7 +22,11 @@ fn write_bytes_to_memory(store: impl AsContext, memory: Memory, ptr: i32, slice:
   }
 }
 
-pub(crate) fn add_to_linker(linker: &mut Linker<WapcStore>, host: &Arc<ModuleState>) -> super::Result<()> {
+pub(crate) fn add_to_linker(
+  linker: &mut Linker<WapcStore>,
+  host: &Arc<ModuleState>,
+  sender: &tokio::sync::mpsc::UnboundedSender<Result<(i32, i32), (i32, i32)>>,
+) -> super::Result<()> {
   use wapc::HostExports;
   let module_name = "wapc";
   for export in HostExports::iter() {
@@ -36,8 +40,8 @@ pub(crate) fn add_to_linker(linker: &mut Linker<WapcStore>, host: &Arc<ModuleSta
         linker.func_new(module_name, export.as_ref(), extern_type, extern_fn)?;
       }
       HostExports::AsyncHostCall => {
-        let (extern_type, extern_fn) = linker_async_host_call(host.clone());
-        linker.func_new(module_name, export.as_ref(), extern_type, extern_fn)?;
+        let (extern_type, extern_fn) = linker_async_host_call(host.clone(), sender.clone());
+        linker.func_new(module_name, HostExports::AsyncHostCall.as_ref(), extern_type, extern_fn)?;
       }
       HostExports::GuestRequest => {
         let (extern_type, extern_fn) = linker_guest_request(host.clone());
@@ -76,20 +80,6 @@ pub(crate) fn add_to_linker(linker: &mut Linker<WapcStore>, host: &Arc<ModuleSta
   Ok(())
 }
 
-pub(crate) fn shadow_async_host_call(
-  linker: &mut Linker<WapcStore>,
-  host: &Arc<ModuleState>,
-  sender: tokio::sync::mpsc::UnboundedSender<Result<(i32, i32), (i32, i32)>>,
-) -> super::Result<()> {
-  use wapc::HostExports;
-  let module_name = "wapc";
-
-  let (extern_type, extern_fn) = contextual_async_host_call(host.clone(), sender);
-  linker.func_new(module_name, HostExports::AsyncHostCall.as_ref(), extern_type, extern_fn)?;
-
-  Ok(())
-}
-
 fn linker_guest_request(
   host: Arc<ModuleState>,
 ) -> (
@@ -99,6 +89,7 @@ fn linker_guest_request(
   (
     FuncType::new(vec![ValType::I32, ValType::I32, ValType::I32], vec![]),
     move |mut caller, params, _results| {
+      trace!(name = wapc::HostExports::GuestRequest.as_ref(), "calling import");
       let id = params[0].unwrap_i32();
       let op_ptr = params[1].unwrap_i32();
       let ptr = params[2].unwrap_i32();
@@ -106,8 +97,11 @@ fn linker_guest_request(
       let invocation = host.get_guest_request(id);
       let memory = get_caller_memory(&mut caller);
       if let Some(inv) = invocation {
+        trace!(op=%inv.operation, payload=?inv.msg, "guest call response");
         write_bytes_to_memory(caller.as_context(), memory, ptr, &inv.msg);
         write_bytes_to_memory(caller.as_context(), memory, op_ptr, inv.operation.as_bytes());
+      } else {
+        error!(id, "got guest_request for non-existent id");
       }
       Ok(())
     },
@@ -123,6 +117,7 @@ fn linker_console_log(
   (
     FuncType::new(vec![ValType::I32, ValType::I32], vec![]),
     move |mut caller, params: &[Val], _results: &mut [Val]| {
+      trace!(name = wapc::HostExports::ConsoleLog.as_ref(), "calling import");
       let ptr = params[0].unwrap_i32();
       let len = params[1].unwrap_i32();
       let memory = get_caller_memory(&mut caller);
@@ -158,6 +153,7 @@ fn linker_host_call(
       vec![ValType::I32],
     ),
     move |mut caller, params: &[Val], results: &mut [Val]| {
+      trace!(name = wapc::HostExports::HostCall.as_ref(), "calling import");
       let memory = get_caller_memory(&mut caller);
 
       let id = params[0].unwrap_i32();
@@ -177,7 +173,7 @@ fn linker_host_call(
       let ns = String::from_utf8(ns_vec).unwrap();
       let op_vec = get_vec_from_memory(caller.as_context(), memory, op_ptr, op_len);
       let op = String::from_utf8(op_vec).unwrap();
-      println!("Guest call {} invoking host operation {}", id, op);
+      trace!(id, %op, "guest call invoking host operation");
       let result = host.do_host_call(id, bd, ns, op, vec);
       if let Ok(r) = result {
         results[0] = Val::I32(r);
@@ -188,75 +184,6 @@ fn linker_host_call(
 }
 
 fn linker_async_host_call(
-  host: Arc<ModuleState>,
-) -> (
-  FuncType,
-  impl Fn(Caller<'_, WapcStore>, &[Val], &mut [Val]) -> Result<(), Trap> + Send + Sync + 'static,
-) {
-  (
-    FuncType::new(
-      vec![
-        ValType::I32,
-        ValType::I32,
-        ValType::I32,
-        ValType::I32,
-        ValType::I32,
-        ValType::I32,
-        ValType::I32,
-        ValType::I32,
-        ValType::I32,
-      ],
-      vec![ValType::I32],
-    ),
-    move |mut caller, params: &[Val], results: &mut [Val]| {
-      let memory = get_caller_memory(&mut caller);
-
-      let id = params[0].unwrap_i32();
-      let bd_ptr = params[1].unwrap_i32();
-      let bd_len = params[2].unwrap_i32();
-      let ns_ptr = params[3].unwrap_i32();
-      let ns_len = params[4].unwrap_i32();
-      let op_ptr = params[5].unwrap_i32();
-      let op_len = params[6].unwrap_i32();
-      let ptr = params[7].unwrap_i32();
-      let len = params[8].unwrap_i32();
-
-      let vec = get_vec_from_memory(caller.as_context(), memory, ptr, len);
-      let bd_vec = get_vec_from_memory(caller.as_context(), memory, bd_ptr, bd_len);
-      let bd = String::from_utf8(bd_vec).unwrap();
-      let ns_vec = get_vec_from_memory(caller.as_context(), memory, ns_ptr, ns_len);
-      let ns = String::from_utf8(ns_vec).unwrap();
-      let op_vec = get_vec_from_memory(caller.as_context(), memory, op_ptr, op_len);
-      let op = String::from_utf8(op_vec).unwrap();
-      println!("Guest call {} invoking async host operation {}", id, op);
-
-      let inner_tx = caller.data().host_ready.clone();
-
-      // let caller = caller.as_context_mut();
-
-      let result = host.do_async_host_call(
-        id,
-        bd,
-        ns,
-        op,
-        vec,
-        Box::new(|id: i32, code: i32| {
-          Box::pin(async move {
-            if let Some(tx) = inner_tx {
-              let _ = (tx)(id, code).await;
-            }
-          })
-        }),
-      );
-      if let Ok(r) = result {
-        results[0] = Val::I32(r);
-      }
-      Ok(())
-    },
-  )
-}
-
-fn contextual_async_host_call(
   host: Arc<ModuleState>,
   sender: tokio::sync::mpsc::UnboundedSender<Result<(i32, i32), (i32, i32)>>,
 ) -> (
@@ -279,6 +206,7 @@ fn contextual_async_host_call(
       vec![ValType::I32],
     ),
     move |mut caller, params: &[Val], results: &mut [Val]| {
+      trace!(name = wapc::HostExports::AsyncHostCall.as_ref(), "calling import");
       let memory = get_caller_memory(&mut caller);
 
       let id = params[0].unwrap_i32();
@@ -298,7 +226,7 @@ fn contextual_async_host_call(
       let ns = String::from_utf8(ns_vec).unwrap();
       let op_vec = get_vec_from_memory(caller.as_context(), memory, op_ptr, op_len);
       let op = String::from_utf8(op_vec).unwrap();
-      println!("Guest call {} invoking async host operation {}", id, op);
+      trace!(id, %op, "guest call invoking async host operation");
 
       // let caller = caller.as_context_mut();
       let sender = sender.clone();
@@ -310,13 +238,12 @@ fn contextual_async_host_call(
         op,
         vec,
         Box::new(move |id: i32, code: i32| {
-          Box::pin(async move {
-            let _ = if code == 0 {
-              sender.send(Ok((id, code)))
-            } else {
-              sender.send(Err((id, code)))
-            };
-          })
+          trace!(id, "async host call complete");
+          let _ = if code == 0 {
+            sender.send(Ok((id, code)))
+          } else {
+            sender.send(Err((id, code)))
+          };
         }),
       );
       if let Ok(r) = result {
@@ -336,6 +263,7 @@ fn linker_host_response(
   (
     FuncType::new(vec![ValType::I32, ValType::I32], vec![]),
     move |mut caller, params: &[Val], _results: &mut [Val]| {
+      trace!(name = wapc::HostExports::HostResponse.as_ref(), "calling import");
       let id = params[0].unwrap_i32();
       if let Some(ref e) = host.get_host_response(id) {
         let memory = get_caller_memory(&mut caller);
@@ -356,6 +284,7 @@ fn linker_host_response_len(
   (
     FuncType::new(vec![ValType::I32], vec![ValType::I32]),
     move |mut _caller, params: &[Val], results: &mut [Val]| {
+      trace!(name = wapc::HostExports::HostResponseLen.as_ref(), "calling import");
       let id = params[0].unwrap_i32();
       results[0] = Val::I32(match host.get_host_response(id) {
         Some(ref r) => r.len() as _,
@@ -375,6 +304,7 @@ fn linker_guest_response_ready(
   (
     FuncType::new(vec![ValType::I32, ValType::I32], vec![]),
     move |mut _caller, params: &[Val], _results: &mut [Val]| {
+      trace!(name = wapc::HostExports::GuestResponseReady.as_ref(), "calling import");
       let id = params[0].unwrap_i32();
       let code = params[1].unwrap_i32();
       host.finish_guest_invocation(id, code);
@@ -392,6 +322,7 @@ fn linker_guest_response(
   (
     FuncType::new(vec![ValType::I32, ValType::I32, ValType::I32], vec![]),
     move |mut caller, params: &[Val], _results: &mut [Val]| {
+      trace!(name = wapc::HostExports::GuestResponse.as_ref(), "calling import");
       let id = params[0].unwrap_i32();
       let ptr = params[1].unwrap_i32();
       let len = params[2].unwrap_i32();
@@ -413,6 +344,7 @@ fn linker_guest_error(
   (
     FuncType::new(vec![ValType::I32, ValType::I32, ValType::I32], vec![]),
     move |mut caller, params: &[Val], _results: &mut [Val]| {
+      trace!(name = wapc::HostExports::GuestError.as_ref(), "calling import");
       let memory = get_caller_memory(&mut caller);
       let id = params[0].unwrap_i32();
       let ptr = params[1].unwrap_i32();
@@ -434,6 +366,7 @@ fn linker_host_error(
   (
     FuncType::new(vec![ValType::I32, ValType::I32], vec![]),
     move |mut caller, params: &[Val], _results: &mut [Val]| {
+      trace!(name = wapc::HostExports::HostError.as_ref(), "calling import");
       let id = params[0].unwrap_i32();
       if let Some(ref e) = host.get_host_error(id) {
         let ptr = params[1].unwrap_i32();
@@ -454,6 +387,7 @@ fn linker_host_error_len(
   (
     FuncType::new(vec![ValType::I32], vec![ValType::I32]),
     move |mut _caller, params: &[Val], results: &mut [Val]| {
+      trace!(name = wapc::HostExports::HostErrorLen.as_ref(), "calling import");
       let id = params[0].unwrap_i32();
       results[0] = Val::I32(match host.get_host_error(id) {
         Some(ref e) => e.len() as _,

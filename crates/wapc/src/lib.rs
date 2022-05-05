@@ -80,7 +80,7 @@
 #![doc = include_str!("../README.md")]
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 pub mod errors;
 
@@ -98,8 +98,8 @@ mod wasi;
 use futures_core::future::BoxFuture;
 pub use wapc_functions::*;
 pub use wapchost::modulestate::ModuleState;
-pub use wapchost::traits::{ModuleHost, WapcCallContext, WebAssemblyEngineProvider};
-pub use wapchost::WapcHost;
+pub use wapchost::traits::{ModuleHost, ProviderCallContext, WebAssemblyEngineProvider};
+pub use wapchost::{WapcCallContext, WapcHost};
 pub use wasi::WasiParams;
 
 /// The signature of a Host Callback function.

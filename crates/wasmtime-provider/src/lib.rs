@@ -89,7 +89,7 @@ mod wapc_store;
 pub use engine_provider::WasmtimeEngineProvider;
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 type Result<T> = std::result::Result<T, errors::Error>;
 

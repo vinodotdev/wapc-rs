@@ -1,11 +1,12 @@
 use std::sync::Arc;
 use std::{fs::read, time::Duration};
 
+use futures::future::join_all;
 use wapc::{errors, WapcHost};
 use wapc_codec::messagepack::{deserialize, serialize};
 
-#[test]
-fn runs_wapc_guest() -> Result<(), errors::Error> {
+#[test_log::test(tokio::test)]
+async fn runs_wapc_guest() -> Result<(), errors::Error> {
   let buf = read("../../wasm/crates/wapc-guest-test/build/wapc_guest_test.wasm")?;
 
   let engine = wasmtime_provider::WasmtimeEngineProvider::new(&buf, None)?;
@@ -20,7 +21,7 @@ fn runs_wapc_guest() -> Result<(), errors::Error> {
   Ok(())
 }
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn runs_async_wapc_guest() -> Result<(), errors::Error> {
   let buf = read("../../wasm/crates/wapc-guest-test/build/wapc_guest_test.wasm")?;
 
@@ -29,7 +30,7 @@ async fn runs_async_wapc_guest() -> Result<(), errors::Error> {
     Box::new(engine),
     Some(Arc::new(move |_a, _b, _c, _d, _e| {
       Box::pin(async move {
-        let duration = 2000;
+        let duration = 100;
         println!("in host, sleeping {} ms.", duration);
         tokio::time::sleep(Duration::from_millis(duration)).await;
         println!("in host, done sleeping.");
@@ -37,9 +38,26 @@ async fn runs_async_wapc_guest() -> Result<(), errors::Error> {
       })
     })),
   )?;
-  let payload = serialize("hello world").unwrap();
-  let callresult = guest.call_async("async_echo", payload).await?;
-  let result: String = deserialize(&callresult).unwrap();
-  assert_eq!(result, "hello world");
+
+  let results = join_all(vec![
+    guest.call_async("async_echo", serialize("one").unwrap()),
+    guest.call_async("async_echo", serialize("two").unwrap()),
+    guest.call_async("async_echo", serialize("three").unwrap()),
+    guest.call_async("async_echo", serialize("four").unwrap()),
+    guest.call_async("async_echo", serialize("five").unwrap()),
+  ])
+  .await;
+  let expected = vec![
+    serialize("one").unwrap(),
+    serialize("two").unwrap(),
+    serialize("three").unwrap(),
+    serialize("four").unwrap(),
+    serialize("five").unwrap(),
+  ];
+
+  for (i, val) in results.into_iter().enumerate() {
+    assert_eq!(val.unwrap(), expected[i]);
+  }
+
   Ok(())
 }

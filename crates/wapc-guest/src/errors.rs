@@ -20,7 +20,7 @@ use std::error::Error as StdError;
 use std::fmt;
 
 /// This crate's Error type
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Error(ErrorKind);
 
 /// Create a new [Error] of the passed kind.
@@ -30,12 +30,12 @@ pub fn new(kind: ErrorKind) -> Error {
 }
 
 /// The kinds of errors this crate returns.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ErrorKind {
   /// Error returned when a host call fails.
   HostError(Vec<u8>),
   /// Error completing an asynchronous request.
-  Async(u32, String),
+  Async(i32, String),
 }
 
 impl StdError for Error {}

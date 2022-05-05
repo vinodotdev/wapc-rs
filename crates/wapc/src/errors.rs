@@ -15,6 +15,9 @@ pub enum Error {
   /// Error during a host call.
   #[error("Error during host call: {0}")]
   HostCallFailure(Box<dyn std::error::Error + Sync + Send>),
+  /// Context creation failed.
+  #[error("Context creation failed: {0}")]
+  Context(String),
   /// Initialization Failed.
   #[error("Initialization failed: {0}")]
   InitFailed(String),

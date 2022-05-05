@@ -62,6 +62,7 @@ pub(crate) fn compute_argv(module: &Path, module_args: &[String]) -> Vec<String>
 
 #[cfg(feature = "wasi")]
 pub(crate) fn init_wasi(params: &wapc::WasiParams) -> super::Result<WasiCtx> {
+  trace!("initializing wasi");
   init_ctx(
     &compute_preopen_dirs(&params.preopened_dirs, &params.map_dirs).unwrap(),
     &params.argv,

@@ -1,8 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use futures_core::future::BoxFuture;
-
 use crate::wapchost::modulestate::ModuleState;
 use crate::Invocation;
 
@@ -48,11 +46,16 @@ pub trait ModuleHost {
 pub trait WebAssemblyEngineProvider {
   /// Tell the engine provider that it can do whatever processing it needs to do for
   /// initialization and give it access to the module state
-  fn init(&mut self, host: Arc<ModuleState>) -> Result<(), Box<dyn Error + Send + Sync>>;
+  fn init(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    Ok(())
+  }
 
   /// Tell the engine provider that it can do whatever processing it needs to do for
   /// initialization and give it access to the module state
-  fn new_context(&self) -> Result<Box<dyn WapcCallContext + Sync + Send>, Box<dyn Error + Send + Sync>>;
+  fn new_context(
+    &self,
+    state: Arc<ModuleState>,
+  ) -> Result<Box<dyn ProviderCallContext + Sync + Send>, Box<dyn Error + Send + Sync>>;
 
   /// Called by the host to replace the WebAssembly module bytes of the previously initialized module. Engine must return an
   /// error if it does not support bytes replacement.
@@ -60,7 +63,11 @@ pub trait WebAssemblyEngineProvider {
 }
 
 /// A context that we can call functions from.
-pub trait WapcCallContext {
+pub trait ProviderCallContext {
+  /// Tell the engine provider that it can do whatever processing it needs to do for
+  /// initialization and give it access to the module state
+  fn init(&mut self) -> Result<(), Box<dyn Error + Send + Sync>>;
+
   /// Trigger the waPC function call. Engine provider is responsible for execution and using the appropriate methods
   /// on the module host. When this function is complete, the guest response and optionally the guest
   /// error must be set to represent the high-level call result
@@ -69,5 +76,10 @@ pub trait WapcCallContext {
   /// Trigger the waPC function call. Engine provider is responsible for execution and using the appropriate methods
   /// on the module host. When this function is complete, the guest response and optionally the guest
   /// error must be set to represent the high-level call result
-  fn call_async(&mut self, id: i32, op_length: i32, msg_length: i32) -> BoxFuture<Result<Vec<u8>, String>>;
+  fn call_async(
+    &mut self,
+    id: i32,
+    op_length: i32,
+    msg_length: i32,
+  ) -> Result<i32, Box<(dyn Error + Send + Sync + 'static)>>;
 }

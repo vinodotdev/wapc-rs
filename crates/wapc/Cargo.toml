@@ -19,11 +19,11 @@ categories = ["wasm", "api-bindings"]
 independent = true
 
 [dependencies]
-log = "0.4"
 parking_lot = "0.12"
 thiserror = "1.0"
 futures-core = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 strum = { version = "0.24", features = ["derive"] }
+tracing = "0.1"
 
 [dev-dependencies]

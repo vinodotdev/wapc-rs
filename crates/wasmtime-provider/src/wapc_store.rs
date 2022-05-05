@@ -1,8 +1,5 @@
-use futures_core::future::BoxFuture;
 use wapc::WasiParams;
 use wasmtime::{Engine, Store};
-
-use std::sync::Arc;
 
 use crate::wasi::init_wasi;
 
@@ -14,17 +11,12 @@ type WasiCtx = FakeWasiCtx;
 type WasiCtx = wasmtime_wasi::WasiCtx;
 
 pub(crate) struct WapcStore {
-  pub(crate) host_ready: Option<Arc<dyn Fn(i32, i32) -> BoxFuture<'static, ()> + Send + Sync>>,
   pub(crate) wasi_ctx: Option<WasiCtx>,
 }
 
 pub(crate) fn new_store(wasi_params: &Option<WasiParams>, engine: &Engine) -> super::Result<Store<WapcStore>> {
-  let ctx = wasi_params.as_ref().and_then(|p| init_wasi(p).ok());
-  Ok(Store::new(
-    engine,
-    WapcStore {
-      wasi_ctx: ctx,
-      host_ready: None,
-    },
-  ))
+  trace!("creating new memory store");
+  let params = wasi_params.clone().unwrap_or_default();
+  let ctx = init_wasi(&params)?;
+  Ok(Store::new(engine, WapcStore { wasi_ctx: Some(ctx) }))
 }

@@ -1,27 +1,20 @@
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::sync::Arc;
 
-use futures_core::future::BoxFuture;
 use parking_lot::Mutex;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
-use wapc::{guest_exports, GuestExports, WapcCallContext};
+use wapc::{GuestExports, ProviderCallContext};
 use wapc::{ModuleState, WasiParams, WebAssemblyEngineProvider};
-use wasmtime::{AsContextMut, Engine, Instance, Linker, Module, Store, StoreContext, StoreContextMut, TypedFunc};
+use wasmtime::{AsContextMut, Engine, Instance, Linker, Module, Store, TypedFunc};
 
 use super::Result;
 use crate::wapc_link;
 use crate::wapc_store::{new_store, WapcStore};
 
-struct EngineInner {
-  host: Arc<ModuleState>,
-}
 /// A waPC engine provider that encapsulates the Wasmtime WebAssembly runtime
 #[allow(missing_debug_implementations)]
 pub struct WasmtimeEngineProvider {
   module: Module,
-  inner: Option<Arc<EngineInner>>,
   engine: Arc<Engine>,
   linker: Linker<WapcStore>,
   wasi_params: Option<WasiParams>,
@@ -31,26 +24,14 @@ impl Clone for WasmtimeEngineProvider {
   fn clone(&self) -> Self {
     let engine = self.engine.clone();
 
-    match &self.inner {
-      Some(state) => {
-        let mut new = Self {
-          module: self.module.clone(),
-          inner: None,
-          wasi_params: self.wasi_params.clone(),
-          engine,
-          linker: self.linker.clone(),
-        };
-        new.init(state.host.clone()).unwrap();
-        new
-      }
-      None => Self {
-        module: self.module.clone(),
-        inner: None,
-        wasi_params: self.wasi_params.clone(),
-        engine,
-        linker: self.linker.clone(),
-      },
-    }
+    let mut new = Self {
+      module: self.module.clone(),
+      wasi_params: self.wasi_params.clone(),
+      engine,
+      linker: self.linker.clone(),
+    };
+    new.init().unwrap();
+    new
   }
 }
 
@@ -89,7 +70,6 @@ impl WasmtimeEngineProvider {
 
     Ok(WasmtimeEngineProvider {
       module,
-      inner: None,
       engine: Arc::new(engine),
       wasi_params,
       linker,
@@ -98,27 +78,20 @@ impl WasmtimeEngineProvider {
 }
 
 impl WebAssemblyEngineProvider for WasmtimeEngineProvider {
-  fn init(&mut self, host: Arc<ModuleState>) -> std::result::Result<(), Box<(dyn std::error::Error + Send + Sync)>> {
-    wapc_link::add_to_linker(&mut self.linker, &host)?;
-
-    self.inner = Some(Arc::new(EngineInner { host }));
-    Ok(())
-  }
-
   fn new_context(
     &self,
+    state: Arc<ModuleState>,
   ) -> std::result::Result<
-    Box<(dyn WapcCallContext + Send + Sync + 'static)>,
+    Box<(dyn ProviderCallContext + Send + Sync + 'static)>,
     Box<(dyn std::error::Error + Send + Sync + 'static)>,
   > {
     let store = new_store(&self.wasi_params, &self.engine)?;
 
     Ok(Box::new(WasmtimeCallContext::new(
-      self.inner.clone().unwrap(),
+      state,
       self.linker.clone(),
       &self.module,
       store,
-      &self.inner.as_ref().unwrap().host,
     )?))
   }
 
@@ -145,21 +118,16 @@ impl WebAssemblyEngineProvider for WasmtimeEngineProvider {
   }
 }
 
-type HostCallMap = Arc<Mutex<HashMap<i32, tokio::sync::oneshot::Sender<std::result::Result<Vec<u8>, String>>>>>;
-
 struct WasmtimeCallContext {
   store: Arc<Mutex<Store<WapcStore>>>,
   instance: Instance,
-  wapc: Arc<EngineInner>,
-  task: JoinHandle<()>,
-  async_calls: HostCallMap,
+  state: Arc<ModuleState>,
+  _task: JoinHandle<()>,
 }
 
 fn make_async_handler(
   func: TypedFunc<(i32, i32), ()>,
-  host: Arc<ModuleState>,
   store: Arc<Mutex<Store<WapcStore>>>,
-  callmap: HostCallMap,
   mut rx: UnboundedReceiver<std::result::Result<(i32, i32), (i32, i32)>>,
 ) -> JoinHandle<()> {
   tokio::spawn(async move {
@@ -168,90 +136,73 @@ fn make_async_handler(
         Ok(v) => v,
         Err(v) => v,
       };
+      trace!(id, "received host call complete");
+
       let mut store = store.lock();
       let _ = func.call(store.as_context_mut(), (id, code));
-      let sender = {
-        let lock = callmap.lock();
-        lock.remove(&id)
-      };
-      match sender {
-        Some(tx) => match result {
-          Ok((id, code)) => match host.get_host_response(id) {
-            Some(bytes) => {
-              tx.send(Ok(bytes));
-            }
-            None => {
-              tx.send(Err(
-                "Async host call completed but no data available to return".to_owned(),
-              ));
-            }
-          },
-          Err((id, code)) => match host.get_host_error(id) {
-            Some(bytes) => {
-              tx.send(Err(bytes));
-            }
-            None => {
-              tx.send(Err(
-                "Async host call completed with error but no error available to return".to_owned(),
-              ));
-            }
-          },
-        },
-        None => todo!(),
-      }
+      // let sender = {
+      //   let mut lock = callmap.lock();
+      //   lock.remove(&id)
+      // };
+      // match sender {
+      //   Some(tx) => match result {
+      //     Ok((id, code)) => match host.get_host_response(id) {
+      //       Some(bytes) => {
+      //         tx.send(Ok(bytes));
+      //       }
+      //       None => {
+      //         tx.send(Err(
+      //           "Async host call completed but no data available to return".to_owned(),
+      //         ));
+      //       }
+      //     },
+      //     Err((id, code)) => match host.get_host_error(id) {
+      //       Some(bytes) => {
+      //         tx.send(Err(bytes));
+      //       }
+      //       None => {
+      //         tx.send(Err(
+      //           "Async host call completed with error but no error available to return".to_owned(),
+      //         ));
+      //       }
+      //     },
+      //   },
+      //   None => {
+      //     println!("Sender not found? {}", id);
+      //   }
+      // }
     }
   })
 }
 
 impl WasmtimeCallContext {
   pub(crate) fn new(
-    wapc: Arc<EngineInner>,
+    state: Arc<ModuleState>,
     mut linker: Linker<WapcStore>,
     module: &Module,
     mut store: Store<WapcStore>,
-    host: &Arc<ModuleState>,
   ) -> Result<Self> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    wapc_link::shadow_async_host_call(&mut linker, host, tx)?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    wapc_link::add_to_linker(&mut linker, &state, &tx)?;
     let instance = linker.instantiate(store.as_context_mut(), module)?;
 
     let func = instance
       .get_typed_func::<(i32, i32), (), _>(store.as_context_mut(), GuestExports::HostResponseReady.as_ref())
       .map_err(|_| crate::errors::Error::HostResponseReadyNotFound)?;
     let store = Arc::new(Mutex::new(store));
-    let inner_store = store.clone();
-    let async_calls: HostCallMap = Arc::new(Mutex::new(HashMap::new()));
 
-    let task = make_async_handler(func, host.clone(), store.clone(), async_calls.clone(), rx);
+    let task = make_async_handler(func, store.clone(), rx);
 
-    let mut context = Self {
-      task,
-      wapc,
+    Ok(Self {
+      _task: task,
+      state,
       instance,
       store,
-      async_calls,
-    };
-    context.initialize()?;
-
-    Ok(context)
-  }
-
-  fn initialize(&mut self) -> Result<()> {
-    for starter in wapc::wapc_functions::guest_exports::REQUIRED_STARTS.iter() {
-      let mut store = self.store.lock();
-      let func = self
-        .instance
-        .get_typed_func(store.as_context_mut(), starter)
-        .map_err(|e| crate::errors::Error::InitializationFailed(e.into()))?;
-      func
-        .call(store.as_context_mut(), ())
-        .map_err(|e| crate::errors::Error::InitializationFailed(e.into()))?;
-    }
-    Ok(())
+    })
   }
 }
 
-impl WapcCallContext for WasmtimeCallContext {
+impl ProviderCallContext for WasmtimeCallContext {
   fn call(
     &mut self,
     id: i32,
@@ -270,7 +221,7 @@ impl WapcCallContext for WasmtimeCallContext {
       Ok(result) => Ok(result),
       Err(e) => {
         error!("Failure invoking guest module handler: {:?}", e);
-        self.wapc.host.set_guest_error(id, e.to_string());
+        self.state.set_guest_error(id, e.to_string());
         Ok(0)
       }
     }
@@ -281,35 +232,36 @@ impl WapcCallContext for WasmtimeCallContext {
     id: i32,
     op_length: i32,
     msg_length: i32,
-  ) -> BoxFuture<std::result::Result<Vec<u8>, Box<(dyn std::error::Error + Send + Sync + 'static)>>> {
-    let mut lock = self.store.lock();
-
+  ) -> std::result::Result<i32, Box<(dyn std::error::Error + Send + Sync + 'static)>> {
+    let mut store = self.store.lock();
     let func = self
       .instance
-      .get_typed_func::<(i32, i32, i32), (), _>(lock.as_context_mut(), GuestExports::AsyncGuestCall.as_ref())
-      // .map_err(|_| crate::errors::Error::AsyncGuestCallNotFound)
-      .unwrap();
-    let call = func.call(lock.as_context_mut(), (id, op_length, msg_length));
-    drop(lock);
+      .get_typed_func::<(i32, i32, i32), (), _>(store.as_context_mut(), GuestExports::AsyncGuestCall.as_ref())
+      .map_err(|_| crate::errors::Error::AsyncGuestCallNotFound)?;
 
-    let wapc = self.wapc.clone();
-    let (tx, mut rx) = tokio::sync::oneshot::channel();
-    let mut lock = self.async_calls.lock();
-    lock.insert(id, tx);
+    let call = func.call(store.as_context_mut(), (id, op_length, msg_length));
 
-    let inner_store = self.store.clone();
-    Box::pin(async move {
-      match call {
-        Ok(_) => match rx.await {
-          Ok(v) => v,
-          Err(e) => Err("Failure waiting for async call to complete".to_owned()),
-        },
-        Err(e) => {
-          error!("Failure invoking guest module handler: {:?}", e);
-          Err(e.to_string().into())
-        }
+    match call {
+      Ok(_) => Ok(0),
+      Err(e) => {
+        error!("Failure invoking guest module handler: {:?}", e);
+        self.state.set_guest_error(id, e.to_string());
+        Ok(0)
       }
-    })
+    }
+  }
+
+  fn init(&mut self) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for starter in wapc::wapc_functions::guest_exports::REQUIRED_STARTS.iter() {
+      let mut store = self.store.lock();
+      match self.instance.get_typed_func(store.as_context_mut(), starter) {
+        Ok(func) => func
+          .call(store.as_context_mut(), ())
+          .map_err(|e| crate::errors::Error::InitializationFailed(e.into()))?,
+        Err(_) => continue,
+      };
+    }
+    Ok(())
   }
 }
 

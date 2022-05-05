@@ -28,7 +28,7 @@ wasi = ["wasi-common", "wasmtime-wasi"]
 
 [dependencies]
 wapc = { path = "../wapc", version = "1.0.0" }
-log = "0.4"
+tracing = "0.1"
 wasmtime = "0.36.0"
 thiserror = "1.0"
 cfg-if = "1.0.0"
@@ -45,3 +45,9 @@ wasi-common = { version = "0.36", optional = true }
 wapc-codec = { path = "../wapc-codec" }
 env_logger = "0.9"
 tokio = { version = "1", features = ["macros", "time"] }
+test-log = "0.2.10"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "env-filter",
+  "fmt",
+] }
+futures = "0.3"

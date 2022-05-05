@@ -5,7 +5,7 @@ use custom_gen as generated;
 
 #[no_mangle]
 pub fn wapc_init() {
-  println!("wapc_init");
+  println!(">> guest: wapc_init");
   generated::Handlers::register_echo(echo);
   generated::Handlers::async_register_echo(async_echo);
   register_dispatcher(Box::new(generated::MyDispatcher {}))
