@@ -101,32 +101,38 @@ impl HostPool {
         let factory = self.factory.clone();
         let rx = self.rx.clone();
         pool.execute(move || {
-          trace!("Host thread {}.{} started...", name, i);
-          let host = factory();
-          loop {
-            let message = match max_idle {
-              None => rx.recv().map_err(|e| e.to_string()),
-              Some(duration) => rx.recv_timeout(duration).map_err(|e| e.to_string()),
-            };
-            if let Err(e) = message {
-              debug!("Host thread {}.{} closing: {}", name, i, e);
-              break;
-            }
-            let (tx, op, payload) = message.unwrap();
-            trace!(
-              "Host thread {}.{} received call for {} with {} byte payload",
-              name,
-              i,
-              op,
-              payload.len()
-            );
-            let result = host.call(&op, &payload);
-            if tx.send(result).is_err() {
-              error!("Host thread {}.{} failed when returning a value...", name, i);
-            }
-          }
+          tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+              trace!("Host thread {}.{} started...", name, i);
+              let host = factory();
+              loop {
+                let message = match max_idle {
+                  None => rx.recv().map_err(|e| e.to_string()),
+                  Some(duration) => rx.recv_timeout(duration).map_err(|e| e.to_string()),
+                };
+                if let Err(e) = message {
+                  debug!("Host thread {}.{} closing: {}", name, i, e);
+                  break;
+                }
+                let (tx, op, payload) = message.unwrap();
+                trace!(
+                  "Host thread {}.{} received call for {} with {} byte payload",
+                  name,
+                  i,
+                  op,
+                  payload.len()
+                );
+                let result = host.call_async(&op, payload).await;
+                if tx.send(result).is_err() {
+                  error!("Host thread {}.{} failed when returning a value...", name, i);
+                }
+              }
 
-          trace!("Host thread {}.{} stopped.", name, i);
+              trace!("Host thread {}.{} stopped.", name, i);
+            });
         });
         Ok(())
       }
@@ -358,7 +364,7 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use tokio::join;
-  use wapc::WebAssemblyEngineProvider;
+  use wapc::{WapcHostBuilder, WebAssemblyEngineProvider};
 
   use super::*;
 
@@ -397,7 +403,7 @@ mod tests {
     }
     let pool = HostPoolBuilder::new()
       .name("test")
-      .factory(move || WapcHost::new(Box::new(Test::default()), None).unwrap())
+      .factory(move || WapcHostBuilder::new().build(Box::new(Test::default()).unwrap()))
       .min_threads(5)
       .max_threads(5)
       .build();
@@ -451,7 +457,7 @@ mod tests {
     }
     let pool = HostPoolBuilder::new()
       .name("test")
-      .factory(move || WapcHost::new(Box::new(Test::default()), None).unwrap())
+      .factory(move || WapcHostBuilder::new().build(Box::new(Test::default()).unwrap()))
       .min_threads(1)
       .max_threads(5)
       .max_wait(Duration::from_millis(10))

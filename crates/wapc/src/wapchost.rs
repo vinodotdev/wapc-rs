@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use self::modulestate::{CallStatus, ModuleState};
 use self::traits::WebAssemblyEngineProvider;
-use crate::{errors, HostCallback, Invocation, ProviderCallContext};
+use crate::{errors, AsyncHostCallback, HostCallback, Invocation, ProviderCallContext};
 
 static GLOBAL_MODULE_COUNT: AtomicU64 = AtomicU64::new(1);
 static GLOBAL_CONTEXT_COUNT: AtomicU64 = AtomicU64::new(1);
@@ -24,7 +24,8 @@ type Result<T> = std::result::Result<T, crate::errors::Error>;
 #[allow(missing_debug_implementations)]
 pub struct WapcHost {
   engine: RefCell<Box<dyn WebAssemblyEngineProvider>>,
-  host_callback: Option<Arc<HostCallback>>,
+  async_hostcall: Option<Arc<AsyncHostCallback>>,
+  sync_hostcall: Option<Arc<HostCallback>>,
   id: u64,
 }
 
@@ -37,11 +38,16 @@ impl WapcHost {
 
   /// Creates a new instance of a waPC-compliant host runtime paired with a given
   /// low-level engine provider
-  pub fn new(engine: Box<dyn WebAssemblyEngineProvider>, host_callback: Option<Arc<HostCallback>>) -> Result<Self> {
+  pub fn new(
+    engine: Box<dyn WebAssemblyEngineProvider>,
+    sync_hostcall: Option<Arc<HostCallback>>,
+    async_hostcall: Option<Arc<AsyncHostCallback>>,
+  ) -> Result<Self> {
     let id = Self::next_id();
     let mh = WapcHost {
       engine: RefCell::new(engine),
-      host_callback,
+      sync_hostcall,
+      async_hostcall,
       id,
     };
 
@@ -72,7 +78,11 @@ impl WapcHost {
   /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
   /// might be due to lazy initialization or JIT-compilation.
   pub fn call(&self, op: &str, payload: &[u8]) -> Result<Vec<u8>> {
-    let state = Arc::new(ModuleState::new(self.host_callback.clone(), self.id));
+    let state = Arc::new(ModuleState::new(
+      self.sync_hostcall.clone(),
+      self.async_hostcall.clone(),
+      self.id,
+    ));
     let context = self
       .engine
       .borrow()
@@ -92,7 +102,11 @@ impl WapcHost {
   /// might incur a "cold start" penalty, depending on which underlying engine you're using. This
   /// might be due to lazy initialization or JIT-compilation.
   pub fn call_async<T: AsRef<str>>(&self, op: T, payload: Vec<u8>) -> futures_core::future::BoxFuture<Result<Vec<u8>>> {
-    let state = Arc::new(ModuleState::new(self.host_callback.clone(), self.id));
+    let state = Arc::new(ModuleState::new(
+      self.sync_hostcall.clone(),
+      self.async_hostcall.clone(),
+      self.id,
+    ));
     let context = self.engine.borrow().new_context(state.clone());
     let op = op.as_ref().to_owned();
 
@@ -123,6 +137,47 @@ impl WapcHost {
       Ok(_) => Ok(()),
       Err(e) => Err(errors::Error::ReplacementFailed(e.to_string())),
     }
+  }
+}
+
+/// A builder for [WapcHost]s
+#[must_use]
+#[derive(Default)]
+pub struct WapcHostBuilder {
+  async_hostcall: Option<Arc<AsyncHostCallback>>,
+  sync_hostcall: Option<Arc<HostCallback>>,
+}
+
+impl std::fmt::Debug for WapcHostBuilder {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("WapcHostBuilder")
+      .field("async_hostcall", &self.async_hostcall.as_ref().map(|_| "Fn"))
+      .field("sync_hostcall", &self.sync_hostcall.as_ref().map(|_| "Fn"))
+      .finish()
+  }
+}
+
+impl WapcHostBuilder {
+  /// Instantiate a new [WapcHostBuilder].
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Configure a synchronous callback for this WapcHost.
+  pub fn callback(mut self, callback: Arc<HostCallback>) -> Self {
+    self.sync_hostcall = Some(callback);
+    self
+  }
+
+  /// Configure a synchronous callback for this WapcHost.
+  pub fn async_callback(mut self, callback: Arc<AsyncHostCallback>) -> Self {
+    self.async_hostcall = Some(callback);
+    self
+  }
+
+  /// Configure a synchronous callback for this WapcHost.
+  pub fn build(self, engine: Box<dyn WebAssemblyEngineProvider>) -> Result<WapcHost> {
+    WapcHost::new(engine, self.sync_hostcall, self.async_hostcall)
   }
 }
 

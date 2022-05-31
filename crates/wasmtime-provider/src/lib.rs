@@ -77,14 +77,14 @@
   missing_docs
 )]
 #![doc = include_str!("../README.md")]
-mod wapc_link;
+mod wapc_wasmtime;
 #[cfg(feature = "wasi")]
 mod wasi;
 
 mod engine_provider;
 /// The crate's error module
 pub mod errors;
-mod wapc_store;
+mod store;
 
 pub use engine_provider::WasmtimeEngineProvider;
 

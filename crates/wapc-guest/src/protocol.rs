@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
-use wasm_rs_async_executor::single_threaded::tasks_count;
+use yielding_async_executor::single_threaded::tasks_count;
 
 use crate::errors;
 
@@ -144,10 +144,10 @@ pub fn register_dispatcher(dispatcher: Box<dyn Dispatcher + Send + Sync>) {
 
 /// Run all tasks until completion
 pub fn exhaust_tasks() {
-  crate::executor::run_while(Some(Box::new(move || {
+  crate::executor::run_while(move || {
     let num_in_flight = ASYNC_HOST_CALLS.lock().len();
     tasks_count() - num_in_flight > 0
-  })));
+  });
 }
 
 /// Dispatcher trait for routing requests
@@ -304,7 +304,7 @@ pub fn async_host_call<'a>(
 
   Box::pin(async move {
     println!(">> guest: inner wasm task awaiting channel recv");
-    if callresult != 0 {
+    if callresult == 0 {
       println!(">> guest: call failed");
       // call was not successful
       #[allow(unsafe_code)]

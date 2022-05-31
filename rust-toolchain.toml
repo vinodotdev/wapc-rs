@@ -1,5 +1,5 @@
 [toolchain]
-channel = "1.57.0"
+channel = "stable"
 components = ["rustfmt", "clippy"]
 
 # Note: rebuilding the wasm requires targets

@@ -99,14 +99,18 @@ use futures_core::future::BoxFuture;
 pub use wapc_functions::*;
 pub use wapchost::modulestate::ModuleState;
 pub use wapchost::traits::{ModuleHost, ProviderCallContext, WebAssemblyEngineProvider};
-pub use wapchost::{WapcCallContext, WapcHost};
+pub use wapchost::{WapcCallContext, WapcHost, WapcHostBuilder};
 pub use wasi::WasiParams;
 
 /// The signature of a Host Callback function.
-pub type HostCallback = dyn Fn(i32, String, String, String, Vec<u8>) -> BoxFuture<'static, Result<Vec<u8>, Box<dyn Error + Send + Sync>>>
-  + Sync
-  + Send
-  + 'static;
+pub type AsyncHostCallback =
+  dyn Fn(i32, String, String, String, Vec<u8>) -> BoxFuture<'static, HostResult> + Sync + Send + 'static;
+
+/// The signature of a Host Callback function.
+pub type HostCallback = dyn Fn(i32, String, String, String, Vec<u8>) -> HostResult + Sync + Send + 'static;
+
+/// The result type that hostcalls produce.
+pub type HostResult = Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
 
 /// The signature of a Host response ready callback.
 pub type HostResponseReady = dyn Fn(i32, i32) -> BoxFuture<'static, ()> + Sync + Send + 'static;

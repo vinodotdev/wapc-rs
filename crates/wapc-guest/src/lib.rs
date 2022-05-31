@@ -82,10 +82,9 @@ pub mod errors;
 mod protocol;
 
 pub use protocol::*;
-
 #[cfg(feature = "codec")]
 pub use wapc_codec as codec;
-pub use wasm_rs_async_executor::single_threaded as executor;
+pub use yielding_async_executor::single_threaded as executor;
 
 /// Glob imports for common guest module development
 pub mod prelude;

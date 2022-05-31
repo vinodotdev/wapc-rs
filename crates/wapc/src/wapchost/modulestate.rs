@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::oneshot::Receiver;
 
-use crate::{HostCallback, Invocation};
+use crate::{AsyncHostCallback, HostCallback, Invocation};
 
 #[allow(missing_debug_implementations)]
 #[derive(Default)]
@@ -42,8 +42,8 @@ pub(crate) enum CallStatus {
 /// a waPC conversation
 pub struct ModuleState {
   pub(super) calls: Arc<Mutex<HashMap<i32, CallState>>>,
-  pub(super) host_calls: Arc<Mutex<HashMap<i32, CallState>>>,
-  pub(super) host_callback: Option<Arc<HostCallback>>,
+  pub(super) async_hostcall: Option<Arc<AsyncHostCallback>>,
+  pub(super) sync_hostcall: Option<Arc<HostCallback>>,
   pub(super) call_index: AtomicI32,
   pub(super) id: u64,
 }
@@ -51,8 +51,7 @@ pub struct ModuleState {
 impl std::fmt::Debug for ModuleState {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("ModuleState")
-      .field("calls", &self.calls)
-      .field("host_calls", &self.host_calls)
+      .field("guest_calls", &self.calls)
       .field("call_index", &self.call_index)
       .field("id", &self.id)
       .finish()
@@ -60,25 +59,29 @@ impl std::fmt::Debug for ModuleState {
 }
 
 impl ModuleState {
-  pub(crate) fn new(host_callback: Option<Arc<HostCallback>>, id: u64) -> ModuleState {
+  pub(crate) fn new(
+    sync_hostcall: Option<Arc<HostCallback>>,
+    async_hostcall: Option<Arc<AsyncHostCallback>>,
+    id: u64,
+  ) -> ModuleState {
     ModuleState {
       calls: Arc::new(Mutex::new(HashMap::new())),
-      host_calls: Arc::new(Mutex::new(HashMap::new())),
-      host_callback,
-      call_index: AtomicI32::new(0),
+      sync_hostcall,
+      async_hostcall,
+      call_index: AtomicI32::new(1),
       id,
     }
   }
 
   pub(crate) fn init_host_call(&self, id: i32) {
-    let mut lock = self.host_calls.lock();
-    trace!(id, "initialing host call state");
+    let mut lock = self.calls.lock();
+    trace!(module_id = self.id, id, "initializing host call state");
     lock.insert(id, CallState::default());
   }
 
   pub(crate) fn new_invocation(&self, inv: Invocation) -> (i32, Receiver<CallStatus>) {
     let id = self.call_index.fetch_add(1, Ordering::SeqCst);
-    trace!(id, op = %inv.operation, "initialing guest call state");
+    trace!(module_id = self.id, id, op = %inv.operation, "initializing guest call state");
     let mut lock = self.calls.lock();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let call_state = CallState {
@@ -92,7 +95,7 @@ impl ModuleState {
 
   /// Set an async invocation to done.
   pub fn finish_guest_invocation(&self, id: i32, code: i32) {
-    trace!(id, code, "finishing guest invocation");
+    trace!(module_id = self.id, id, code, "finishing guest invocation");
     if let Some(mut c) = self.calls.lock().remove(&id) {
       let tx = c.channel.take().unwrap();
       if code == 0 {
@@ -104,7 +107,7 @@ impl ModuleState {
   }
 
   pub(crate) fn take_state(&self, id: i32) -> Option<CallState> {
-    trace!(id, "dropping state");
+    trace!(module_id = self.id, id, "dropping state");
     let mut lock = self.calls.lock();
     lock.remove(&id)
   }
@@ -113,19 +116,19 @@ impl ModuleState {
 impl ModuleState {
   /// Retrieves the value, if any, of the current guest request
   pub fn get_guest_request(&self, id: i32) -> Option<Invocation> {
-    trace!(id, "get_guest_request");
+    trace!(module_id = self.id, id, "get_guest_request");
     self.calls.lock().get(&id).and_then(|c| c.guest_request.clone())
   }
 
   /// Retrieves the value of the current host response
   pub fn get_host_response(&self, id: i32) -> Option<Vec<u8>> {
-    trace!(id, "get_host_response");
+    trace!(module_id = self.id, id, "get_host_response");
     self.calls.lock().get(&id).and_then(|c| c.host_response.clone())
   }
 
   /// Sets a value indicating that an error occurred inside the execution of a guest call
   pub fn set_guest_error(&self, id: i32, error: String) {
-    trace!(id, "set_guest_error");
+    trace!(module_id = self.id, id, msg = %error, "set_guest_error");
     if let Some(mut c) = self.calls.lock().get_mut(&id) {
       c.guest_error = Some(error);
     }
@@ -133,7 +136,7 @@ impl ModuleState {
 
   /// Sets the value indicating the response data from a guest call
   pub fn set_guest_response(&self, id: i32, response: Vec<u8>) {
-    trace!(id, "set_guest_response");
+    trace!(module_id = self.id, id, "set_guest_response");
     if let Some(mut c) = self.calls.lock().get_mut(&id) {
       c.guest_response = Some(response);
     }
@@ -141,7 +144,7 @@ impl ModuleState {
 
   /// Sets the value indicating the response data from a guest call
   pub fn set_guest_call_complete(&self, id: i32, code: i32, response: Vec<u8>) {
-    trace!(id, code, "set_guest_call_complete");
+    trace!(module_id = self.id, id, code, "set_guest_call_complete");
     if let Some(mut c) = self.calls.lock().get_mut(&id) {
       c.guest_response = Some(response);
     }
@@ -150,103 +153,119 @@ impl ModuleState {
 
   /// Queries the value of the current guest response
   pub fn get_guest_response(&self, id: i32) -> Option<Vec<u8>> {
-    trace!(id, "get_guest_response");
+    trace!(module_id = self.id, id, "get_guest_response");
     self.calls.lock().get(&id).and_then(|c| c.guest_response.clone())
   }
 
   /// Queries the value of the current host error
   pub fn get_host_error(&self, id: i32) -> Option<String> {
-    trace!(id, "get_host_error");
+    trace!(module_id = self.id, id, "get_host_error");
     self.calls.lock().get(&id).and_then(|c| c.host_error.clone())
   }
 
   /// Invoked when the guest module wishes to make a call on the host
   pub fn do_host_call(
     &self,
-    id: i32,
     binding: String,
     namespace: String,
     operation: String,
     payload: Vec<u8>,
   ) -> Result<i32, Box<dyn std::error::Error>> {
-    trace!(id, "do_host_call");
+    let id = self.call_index.fetch_add(1, Ordering::SeqCst);
+    trace!(module_id = self.id, id, %binding, %namespace, %operation, "do_host_call");
     self.init_host_call(id);
 
-    let cb = self.host_callback.clone();
+    let host_callback = self.sync_hostcall.clone();
     let calls = self.calls.clone();
-    tokio::spawn(async move {
-      let result = {
-        match cb {
-          Some(ref f) => f(id, binding, namespace, operation, payload).await,
-          None => Err("Missing host callback function!".into()),
-        }
-      };
-      match result {
-        Ok(v) => {
-          if let Some(mut call_state) = calls.lock().get_mut(&id) {
-            call_state.host_response = Some(v);
-          }
-          1
-        }
-        Err(e) => {
-          if let Some(call_state) = calls.lock().get_mut(&id) {
-            call_state.host_error = Some(format!("{}", e));
-          }
-          0
-        }
+    let span = trace_span!("sync_task", module_id = self.id, id);
+    let _guard = span.enter();
+    trace!("starting");
+    let result = {
+      match host_callback {
+        Some(ref f) => f(id, binding, namespace, operation, payload),
+        None => Err("Missing host callback function!".into()),
       }
-    });
+    };
 
-    Ok(0)
+    let code = match result {
+      Ok(v) => {
+        trace!("host call succeeded: {:?}", v);
+        if let Some(mut call_state) = calls.lock().get_mut(&id) {
+          call_state.host_response = Some(v);
+        } else {
+          error!(id, "call state not initialized");
+        }
+        id
+      }
+      Err(e) => {
+        trace!("host call failed: {}", e);
+        if let Some(call_state) = calls.lock().get_mut(&id) {
+          call_state.host_error = Some(format!("{}", e));
+        } else {
+          error!(id, "call state not initialized");
+        }
+        0
+      }
+    };
+    trace!(module_id = self.id, id, code, "executing callback");
+
+    Ok(code)
   }
 
   /// Invoked when the guest module wishes to make a call on the host
   pub fn do_async_host_call(
     &self,
-    id: i32,
     binding: String,
     namespace: String,
     operation: String,
     payload: Vec<u8>,
     callback: Box<dyn FnOnce(i32, i32) + Send + Sync>,
   ) -> Result<i32, Box<dyn std::error::Error>> {
-    trace!(id, "do_async_host_call");
+    let id = self.call_index.fetch_add(1, Ordering::SeqCst);
+    trace!(module_id = self.id, id, %binding, %namespace, %operation, "do_async_host_call");
     self.init_host_call(id);
 
-    let cb = self.host_callback.clone();
+    let host_callback = self.async_hostcall.clone();
     let calls = self.calls.clone();
+    let module_id = self.id;
     tokio::spawn(async move {
-      let span = trace_span!("async_task", id);
+      let span = trace_span!("async_task", module_id, id);
       let _guard = span.enter();
       trace!("starting");
       let result = {
-        match cb {
+        match host_callback {
           Some(ref f) => f(id, binding, namespace, operation, payload).await,
           None => Err("Missing host callback function!".into()),
         }
       };
-      trace!("host call complete");
 
       let code = match result {
         Ok(v) => {
+          trace!("async host call succeeded: {:?}", v);
           if let Some(mut call_state) = calls.lock().get_mut(&id) {
             call_state.host_response = Some(v);
+          } else {
+            error!(id, "call state not initialized");
           }
-          1
+          id
         }
         Err(e) => {
+          trace!("async host call failed: {}", e);
           if let Some(call_state) = calls.lock().get_mut(&id) {
             call_state.host_error = Some(format!("{}", e));
+          } else {
+            error!(id, "call state not initialized");
           }
           0
         }
       };
-      trace!("executing callback");
+      trace!(module_id, id, code, "executing async callback");
       callback(id, code);
     });
 
-    Ok(0)
+    Ok(id)
   }
+
   /// Invoked when the guest module wants to write a message to the host's `stdout`
   pub fn do_console_log(&self, msg: &str) {
     trace!(id = self.id, msg, "guest console_log");

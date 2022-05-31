@@ -3,7 +3,7 @@ use std::sync::Arc;
 use wapc::{IntoEnumIterator, ModuleState};
 use wasmtime::{AsContext, Caller, FuncType, Linker, Memory, StoreContext, Trap, Val, ValType};
 
-use crate::wapc_store::WapcStore;
+use crate::store::WapcStore;
 fn get_caller_memory<T>(caller: &mut Caller<T>) -> Memory {
   let memory = caller.get_export("memory").map(|e| e.into_memory().unwrap());
   memory.unwrap()
@@ -148,7 +148,6 @@ fn linker_host_call(
         ValType::I32,
         ValType::I32,
         ValType::I32,
-        ValType::I32,
       ],
       vec![ValType::I32],
     ),
@@ -156,15 +155,14 @@ fn linker_host_call(
       trace!(name = wapc::HostExports::HostCall.as_ref(), "calling import");
       let memory = get_caller_memory(&mut caller);
 
-      let id = params[0].unwrap_i32();
-      let bd_ptr = params[1].unwrap_i32();
-      let bd_len = params[2].unwrap_i32();
-      let ns_ptr = params[3].unwrap_i32();
-      let ns_len = params[4].unwrap_i32();
-      let op_ptr = params[5].unwrap_i32();
-      let op_len = params[6].unwrap_i32();
-      let ptr = params[7].unwrap_i32();
-      let len = params[8].unwrap_i32();
+      let bd_ptr = params[0].unwrap_i32();
+      let bd_len = params[1].unwrap_i32();
+      let ns_ptr = params[2].unwrap_i32();
+      let ns_len = params[3].unwrap_i32();
+      let op_ptr = params[4].unwrap_i32();
+      let op_len = params[5].unwrap_i32();
+      let ptr = params[6].unwrap_i32();
+      let len = params[7].unwrap_i32();
 
       let vec = get_vec_from_memory(caller.as_context(), memory, ptr, len);
       let bd_vec = get_vec_from_memory(caller.as_context(), memory, bd_ptr, bd_len);
@@ -173,9 +171,9 @@ fn linker_host_call(
       let ns = String::from_utf8(ns_vec).unwrap();
       let op_vec = get_vec_from_memory(caller.as_context(), memory, op_ptr, op_len);
       let op = String::from_utf8(op_vec).unwrap();
-      trace!(id, %op, "guest call invoking host operation");
-      let result = host.do_host_call(id, bd, ns, op, vec);
-      if let Ok(r) = result {
+      trace!(%op, "guest call invoking host operation");
+      let call_id = host.do_host_call(bd, ns, op, vec);
+      if let Ok(r) = call_id {
         results[0] = Val::I32(r);
       }
       Ok(())
@@ -201,7 +199,6 @@ fn linker_async_host_call(
         ValType::I32,
         ValType::I32,
         ValType::I32,
-        ValType::I32,
       ],
       vec![ValType::I32],
     ),
@@ -209,15 +206,14 @@ fn linker_async_host_call(
       trace!(name = wapc::HostExports::AsyncHostCall.as_ref(), "calling import");
       let memory = get_caller_memory(&mut caller);
 
-      let id = params[0].unwrap_i32();
-      let bd_ptr = params[1].unwrap_i32();
-      let bd_len = params[2].unwrap_i32();
-      let ns_ptr = params[3].unwrap_i32();
-      let ns_len = params[4].unwrap_i32();
-      let op_ptr = params[5].unwrap_i32();
-      let op_len = params[6].unwrap_i32();
-      let ptr = params[7].unwrap_i32();
-      let len = params[8].unwrap_i32();
+      let bd_ptr = params[0].unwrap_i32();
+      let bd_len = params[1].unwrap_i32();
+      let ns_ptr = params[2].unwrap_i32();
+      let ns_len = params[3].unwrap_i32();
+      let op_ptr = params[4].unwrap_i32();
+      let op_len = params[5].unwrap_i32();
+      let ptr = params[6].unwrap_i32();
+      let len = params[7].unwrap_i32();
 
       let vec = get_vec_from_memory(caller.as_context(), memory, ptr, len);
       let bd_vec = get_vec_from_memory(caller.as_context(), memory, bd_ptr, bd_len);
@@ -226,27 +222,26 @@ fn linker_async_host_call(
       let ns = String::from_utf8(ns_vec).unwrap();
       let op_vec = get_vec_from_memory(caller.as_context(), memory, op_ptr, op_len);
       let op = String::from_utf8(op_vec).unwrap();
-      trace!(id, %op, "guest call invoking async host operation");
+      trace!(%op, "guest call invoking async host operation");
 
       // let caller = caller.as_context_mut();
       let sender = sender.clone();
 
-      let result = host.do_async_host_call(
-        id,
+      let call_id = host.do_async_host_call(
         bd,
         ns,
         op,
         vec,
         Box::new(move |id: i32, code: i32| {
-          trace!(id, "async host call complete");
-          let _ = if code == 0 {
+          trace!(id, code, "async host call complete");
+          let _ = if code == 1 {
             sender.send(Ok((id, code)))
           } else {
             sender.send(Err((id, code)))
           };
         }),
       );
-      if let Ok(r) = result {
+      if let Ok(r) = call_id {
         results[0] = Val::I32(r);
       }
       Ok(())
