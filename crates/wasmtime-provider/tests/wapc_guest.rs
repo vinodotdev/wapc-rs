@@ -1,5 +1,6 @@
+use std::fs::read;
 use std::sync::Arc;
-use std::{fs::read, time::Duration};
+use std::time::Duration;
 
 use futures::future::join_all;
 use wapc::{errors, WapcHost};
@@ -12,6 +13,7 @@ async fn runs_wapc_guest() -> Result<(), errors::Error> {
   let engine = wasmtime_provider::WasmtimeEngineProvider::new(&buf, None)?;
   let guest = WapcHost::new(
     Box::new(engine),
+    None,
     Some(Arc::new(move |_a, _b, _c, _d, _e| Box::pin(async move { Ok(vec![]) }))),
   )?;
 
@@ -28,6 +30,7 @@ async fn runs_async_wapc_guest() -> Result<(), errors::Error> {
   let engine = wasmtime_provider::WasmtimeEngineProvider::new(&buf, None)?;
   let guest = WapcHost::new(
     Box::new(engine),
+    None,
     Some(Arc::new(move |_a, _b, _c, _d, _e| {
       Box::pin(async move {
         let duration = 100;

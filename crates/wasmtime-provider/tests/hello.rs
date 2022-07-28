@@ -17,6 +17,7 @@ fn create_guest(path: &str) -> Result<WapcHost, Error> {
   }
   WapcHost::new(
     Box::new(engine),
+    None,
     Some(Arc::new(move |_a, _b, _c, _d, _e| Box::pin(async move { Ok(vec![]) }))),
   )
 }

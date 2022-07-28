@@ -21,7 +21,7 @@ pub fn main() -> Result<(), wapc::errors::Error> {
   let module_bytes = std::fs::read(file).expect("WASM could not be read");
   let engine = WasmtimeEngineProvider::new(&module_bytes, None)?;
 
-  let host = WapcHost::new(Box::new(engine), Some(Arc::new(host_callback)))?;
+  let host = WapcHost::new(Box::new(engine), None, Some(Arc::new(host_callback)))?;
 
   println!("Calling guest (wasm) function '{}'", func);
   let res = host.call(func, payload.to_owned().as_bytes())?;

@@ -64,7 +64,8 @@ pub(crate) fn compute_argv(module: &Path, module_args: &[String]) -> Vec<String>
 pub(crate) fn init_wasi(params: &wapc::WasiParams) -> super::Result<WasiCtx> {
   trace!("initializing wasi");
   init_ctx(
-    &compute_preopen_dirs(&params.preopened_dirs, &params.map_dirs).unwrap(),
+    &compute_preopen_dirs(&params.preopened_dirs, &params.map_dirs)
+      .map_err(|e| crate::errors::Error::PreopenedDirs(e.to_string()))?,
     &params.argv,
     &params.env_vars,
   )

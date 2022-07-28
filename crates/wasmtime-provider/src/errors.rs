@@ -19,6 +19,9 @@ pub enum Error {
   /// Error originating from [wasi_common]
   #[error("{0}")]
   WasiError(#[from] wasi_common::Error),
+  /// Error originating from [wasi_common]
+  #[error("Error exposing directories with WASI: {0}")]
+  PreopenedDirs(String),
 }
 
 impl From<Error> for wapc::errors::Error {
