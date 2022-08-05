@@ -23,6 +23,7 @@ fn create_guest(path: &str) -> Result<WapcHost, Error> {
 }
 
 #[test]
+#[ignore] // adheres to experimental protocol but does not implement async
 fn runs_hello() -> Result<(), Error> {
   let guest = create_guest("../../wasm/crates/wasm-basic/build/wasm_basic.wasm")?;
   let payload = "this is a test";
@@ -33,6 +34,7 @@ fn runs_hello() -> Result<(), Error> {
 }
 
 #[test]
+#[ignore] // adheres to experimental protocol but does not implement async
 #[cfg(feature = "wasi")]
 fn runs_hello_wasi() -> Result<(), Error> {
   let guest = create_guest("../../wasm/crates/wasi-basic/build/wasi_basic.wasm")?;
@@ -44,6 +46,7 @@ fn runs_hello_wasi() -> Result<(), Error> {
 }
 
 #[test]
+#[ignore] // doesn't adhere to experimental interface
 fn runs_hello_as() -> Result<(), Error> {
   let guest = create_guest("../../wasm/hello_as.wasm")?;
 
@@ -54,6 +57,7 @@ fn runs_hello_as() -> Result<(), Error> {
 }
 
 #[test]
+#[ignore] // doesn't adhere to experimental interface
 #[cfg(feature = "wasi")]
 fn runs_hello_tinygo() -> Result<(), Error> {
   let guest = create_guest("../../wasm/hello_tinygo.wasm")?;
@@ -65,6 +69,7 @@ fn runs_hello_tinygo() -> Result<(), Error> {
 }
 
 #[test]
+#[ignore] // doesn't adhere to experimental interface
 fn runs_hello_zig() -> Result<(), Error> {
   let guest = create_guest("../../wasm/hello_zig.wasm")?;
 

@@ -66,7 +66,9 @@ pub trait WebAssemblyEngineProvider {
 pub trait ProviderCallContext {
   /// Tell the engine provider that it can do whatever processing it needs to do for
   /// initialization and give it access to the module state
-  fn init(&mut self) -> Result<(), Box<dyn Error + Send + Sync>>;
+  fn init(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    Ok(())
+  }
 
   /// Trigger the waPC function call. Engine provider is responsible for execution and using the appropriate methods
   /// on the module host. When this function is complete, the guest response and optionally the guest

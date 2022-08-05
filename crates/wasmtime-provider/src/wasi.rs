@@ -2,7 +2,8 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::path::{Component, Path};
 
-// use wasi_cap_std_sync::{ambient_authority, Dir};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use wasi_common::WasiCtx;
 use wasmtime_wasi::{ambient_authority, Dir};
 
@@ -22,19 +23,36 @@ pub(crate) fn init_ctx(
   Ok(ctx_builder.build())
 }
 
+use std::collections::HashMap;
+static OPEN_DIRECTORIES: Lazy<Mutex<HashMap<String, Dir>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn get_dir(path: &str) -> Result<Dir, Box<dyn Error>> {
+  let mut lock = OPEN_DIRECTORIES.lock();
+  let dir = match lock.get(path) {
+    Some(dir) => dir.try_clone()?,
+    None => {
+      let dir = Dir::open_ambient_dir(path, ambient_authority())?;
+      lock.insert(path.to_owned(), dir.try_clone()?);
+      dir
+    }
+  };
+  Ok(dir)
+}
+
 pub(crate) fn compute_preopen_dirs(
   dirs: &[String],
   map_dirs: &[(String, String)],
 ) -> Result<Vec<(String, Dir)>, Box<dyn Error>> {
-  let ambient_authority = ambient_authority();
   let mut preopen_dirs = Vec::new();
 
-  for dir in dirs.iter() {
-    preopen_dirs.push((dir.clone(), Dir::open_ambient_dir(dir, ambient_authority)?));
+  for path in dirs.iter() {
+    let dir = get_dir(path)?;
+    preopen_dirs.push((path.clone(), dir));
   }
 
   for (guest, host) in map_dirs.iter() {
-    preopen_dirs.push((guest.clone(), Dir::open_ambient_dir(host, ambient_authority)?));
+    let dir = get_dir(host)?;
+    preopen_dirs.push((guest.clone(), dir));
   }
 
   Ok(preopen_dirs)

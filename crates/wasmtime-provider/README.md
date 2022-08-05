@@ -28,11 +28,11 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     Ok(vec![])
   };
 
-  let file = "../../wasm/crates/wasm-basic/build/wasm_basic.wasm";
+  let file = "../../wasm/crates/wapc-guest-test/build/wapc_guest_test.wasm";
   let module_bytes = std::fs::read(file)?;
 
   let engine = WasmtimeEngineProvider::new(&module_bytes, None)?;
-  let host = WapcHost::new(Box::new(engine), Some(Box::new(host_callback)))?;
+  let host = WapcHost::new(Box::new(engine), Some(Arc::new(Box::new(host_callback))), None)?;
 
   let res = host.call("ping", b"payload bytes")?;
   assert_eq!(res, b"payload bytes");

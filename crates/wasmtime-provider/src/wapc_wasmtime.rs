@@ -3,6 +3,7 @@ use std::sync::Arc;
 use wapc::{IntoEnumIterator, ModuleState};
 use wasmtime::{AsContext, Caller, FuncType, Linker, Memory, StoreContext, Trap, Val, ValType};
 
+use crate::engine_provider::AsyncChannel;
 use crate::store::WapcStore;
 fn get_caller_memory<T>(caller: &mut Caller<T>) -> Memory {
   let memory = caller.get_export("memory").map(|e| e.into_memory().unwrap());
@@ -25,7 +26,7 @@ fn write_bytes_to_memory(store: impl AsContext, memory: Memory, ptr: i32, slice:
 pub(crate) fn add_to_linker(
   linker: &mut Linker<WapcStore>,
   host: &Arc<ModuleState>,
-  sender: &tokio::sync::mpsc::UnboundedSender<Result<(i32, i32), (i32, i32)>>,
+  sender: &tokio::sync::mpsc::UnboundedSender<AsyncChannel>,
 ) -> super::Result<()> {
   use wapc::HostExports;
   let module_name = "wapc";
@@ -183,7 +184,7 @@ fn linker_host_call(
 
 fn linker_async_host_call(
   host: Arc<ModuleState>,
-  sender: tokio::sync::mpsc::UnboundedSender<Result<(i32, i32), (i32, i32)>>,
+  sender: tokio::sync::mpsc::UnboundedSender<AsyncChannel>,
 ) -> (
   FuncType,
   impl Fn(Caller<'_, WapcStore>, &[Val], &mut [Val]) -> Result<(), Trap> + Send + Sync + 'static,
@@ -235,9 +236,9 @@ fn linker_async_host_call(
         Box::new(move |id: i32, code: i32| {
           trace!(id, code, "async host call complete");
           let _ = if code == 1 {
-            sender.send(Ok((id, code)))
+            sender.send(AsyncChannel::Message(Ok((id, code))))
           } else {
-            sender.send(Err((id, code)))
+            sender.send(AsyncChannel::Message(Err((id, code))))
           };
         }),
       );

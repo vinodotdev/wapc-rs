@@ -115,6 +115,10 @@ impl WapcHost {
         context.map_err(|e| crate::errors::Error::Context(e.to_string()))?,
         state,
       )?;
+
+      // Necessary to let context tasks spin up.
+      tokio::task::yield_now().await;
+
       context
         .call_async(&op, payload)
         .await
@@ -286,7 +290,6 @@ impl WapcCallContext {
       let status = rx
         .await
         .map_err(|_e| errors::Error::GuestCallFailure("Async wait failed".to_owned()))?;
-
       match status {
         CallStatus::Complete(state) => match state.guest_error {
           Some(ref s) => Err(errors::Error::GuestCallFailure(s.clone())),

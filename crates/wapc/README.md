@@ -29,21 +29,23 @@ The following is an example of synchronous, bi-directional procedure calls betwe
 use wasmtime_provider::WasmtimeEngineProvider; // Or Wasm3EngineProvider
 use wapc::WapcHost;
 use std::error::Error;
+use std::sync::Arc;
+
 pub fn main() -> Result<(), Box<dyn Error>> {
 
   // Sample host callback that prints the operation a WASM module requested.
-  let host_callback = |id: u64, bd: &str, ns: &str, op: &str, payload: &[u8]| {
+  let host_callback = |id: i32, bd: String, ns: String, op: String, payload: Vec<u8>| {
     println!("Guest {} invoked '{}->{}:{}' with a {} byte payload",
     id, bd, ns, op, payload.len());
     // Return success with zero-byte payload.
     Ok(vec![])
   };
 
-  let file = "../../wasm/crates/wasm-basic/build/wasm_basic.wasm";
+  let file = "../../wasm/crates/wapc-guest-test/build/wapc_guest_test.wasm";
   let module_bytes = std::fs::read(file)?;
 
   let engine = WasmtimeEngineProvider::new(&module_bytes, None)?;
-  let host = WapcHost::new(Box::new(engine), Some(Box::new(host_callback)))?;
+  let host = WapcHost::new(Box::new(engine), Some(Arc::new(Box::new(host_callback))), None)?;
 
   let res = host.call("ping", b"payload bytes")?;
   assert_eq!(res, b"payload bytes");

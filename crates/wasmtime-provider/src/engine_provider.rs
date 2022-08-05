@@ -49,7 +49,7 @@ impl WasmtimeEngineProvider {
     cache_path: Option<&std::path::Path>,
   ) -> Result<WasmtimeEngineProvider> {
     let mut config = wasmtime::Config::new();
-    config.strategy(wasmtime::Strategy::Cranelift)?;
+    config.strategy(wasmtime::Strategy::Cranelift);
     if let Some(cache) = cache_path {
       config.cache_config_load(cache)?;
     } else if let Err(e) = config.cache_config_load_default() {
@@ -85,13 +85,11 @@ impl WebAssemblyEngineProvider for WasmtimeEngineProvider {
     Box<(dyn ProviderCallContext + Send + Sync + 'static)>,
     Box<(dyn std::error::Error + Send + Sync + 'static)>,
   > {
-    let store = new_store(&self.wasi_params, &self.engine)?;
-
     Ok(Box::new(WasmtimeCallContext::new(
       state,
       self.linker.clone(),
       &self.module,
-      store,
+      new_store(&self.wasi_params, &self.engine)?,
     )?))
   }
 
@@ -103,25 +101,33 @@ impl WebAssemblyEngineProvider for WasmtimeEngineProvider {
   }
 }
 
+#[derive(Clone)]
+pub(crate) enum AsyncChannel {
+  Message(std::result::Result<(i32, i32), (i32, i32)>),
+  Close,
+}
+
 struct WasmtimeCallContext {
   store: Arc<Mutex<Store<WapcStore>>>,
   instance: Instance,
   state: Arc<ModuleState>,
-  _task: JoinHandle<()>,
+  task: JoinHandle<()>,
+  sender: tokio::sync::mpsc::UnboundedSender<AsyncChannel>,
 }
 
-fn make_async_handler(
+fn make_async_hostcall_handler(
   func: TypedFunc<(i32, i32), ()>,
   store: Arc<Mutex<Store<WapcStore>>>,
-  mut rx: UnboundedReceiver<std::result::Result<(i32, i32), (i32, i32)>>,
+  mut rx: UnboundedReceiver<AsyncChannel>,
 ) -> JoinHandle<()> {
   tokio::spawn(async move {
     while let Some(result) = rx.recv().await {
       let (id, code) = match result {
-        Ok(v) => v,
-        Err(v) => v,
+        AsyncChannel::Message(Ok(v)) => v,
+        AsyncChannel::Message(Err(v)) => v,
+        AsyncChannel::Close => break,
       };
-      trace!(id, "received host call complete");
+      trace!(id, "received async message");
 
       let mut store = store.lock();
       let _ = func.call(store.as_context_mut(), (id, code));
@@ -138,6 +144,7 @@ impl WasmtimeCallContext {
   ) -> Result<Self> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     wapc_wasmtime::add_to_linker(&mut linker, &state, &tx)?;
+
     let instance = linker.instantiate(store.as_context_mut(), module)?;
 
     let func = instance
@@ -145,14 +152,22 @@ impl WasmtimeCallContext {
       .map_err(|_| crate::errors::Error::HostResponseReadyNotFound)?;
     let store = Arc::new(Mutex::new(store));
 
-    let task = make_async_handler(func, store.clone(), rx);
+    let task = make_async_hostcall_handler(func, store.clone(), rx);
 
     Ok(Self {
-      _task: task,
+      task,
       state,
       instance,
       store,
+      sender: tx,
     })
+  }
+}
+
+impl Drop for WasmtimeCallContext {
+  fn drop(&mut self) {
+    let _ = self.sender.send(AsyncChannel::Close);
+    self.task.abort();
   }
 }
 
